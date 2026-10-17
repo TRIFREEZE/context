@@ -85,13 +85,16 @@ void Sheet::close (int index)
         juce::MessageManager::callAsync (finish);
         return;
     }
-    shown.onChange = [this, finish]
+    // Never clear shown.onChange from inside itself: that destroys the running lambda and its
+    // captured action (the button's action then never ran). Fire once, guarded by a flag.
+    auto fired = std::make_shared<bool> (false);
+    shown.onChange = [this, finish, fired]
     {
         setAlpha (juce::jlimit (0.0f, 1.0f, shown.get()));
         resized();
-        if (shown.get() <= 0.001f)
+        if (shown.get() <= 0.001f && ! *fired)
         {
-            shown.onChange = nullptr;
+            *fired = true;
             juce::MessageManager::callAsync (finish);
         }
     };

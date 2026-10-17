@@ -113,8 +113,22 @@ SubmitResult LocalGenerationBridgeProvider::submit (const GenerationRequest& req
                         && getCapabilities().has (Feature::AudioConditioning)
                         && request.audioContext->wavFile.existsAsFile()
                         && request.audioContext->wavFile.getSize() <= maxAudioContextBytes;
-    if (sendAudio)
-        request.audioContext->wavFile.loadFileAsData (audioContext);
+    if (request.audioContext.has_value() && ! sendAudio)
+    {
+        // Never drop the user's track silently: say why it can't go out.
+        juce::String why = ! options.profile.supportsAudioUpload ? "this bridge profile has audio upload switched off"
+                         : ! getCapabilities().has (Feature::AudioConditioning) ? "the bridge doesn't list audio_conditioning"
+                         : ! request.audioContext->wavFile.existsAsFile() ? "the track audio file is missing"
+                         : "the track audio is larger than 16 MB";
+        s.error = ProviderError::make (ErrorCode::Unsupported, "Track context not sent: " + why);
+        s.error.userMessage = "Your track wasn't sent: " + why + ".";
+        return s;
+    }
+    if (sendAudio && ! request.audioContext->wavFile.loadFileAsData (audioContext))
+    {
+        s.error = ProviderError::make (ErrorCode::StorageFailed, "Could not read the track context file");
+        return s;
+    }
 
     const auto body = adapter->serializeGenerateRequest (request, sendAudio ? &audioContext : nullptr);
     auto req = makeRequest (adapter->generateUrl(), "POST", body);

@@ -69,7 +69,7 @@ juce::String BridgeApiAdapter::serializeGenerateRequest (const GenerationRequest
             auto* a = new juce::DynamicObject();
             a->setProperty ("format", "wav");
             a->setProperty ("encoding", "base64");
-            a->setProperty ("data", audioContextWav->toBase64Encoding());
+            a->setProperty ("data", juce::Base64::toBase64 (audioContextWav->getData(), audioContextWav->getSize()));   // RFC 4648 (MemoryBlock::toBase64Encoding is JUCE-only)
             if (r.audioContext)
             {
                 if (r.audioContext->seconds > 0.0) a->setProperty ("seconds", std::round (r.audioContext->seconds * 1000.0) / 1000.0);

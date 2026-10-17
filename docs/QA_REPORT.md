@@ -151,3 +151,28 @@ Linux x64 (GCC, Release), same as V2. **Not** run on Windows or in FL Studio.
 Not verified: real Kie.ai responses for the new models (stem file naming, add-vocals length),
 animation smoothness on a real Windows display (the vblank clock was only exercised headless),
 and FL Studio's handling of plugin keyboard focus.
+
+## V2.1.1 — Send my track (October 2026)
+
+Reported: "Send my track" stays off after confirming the consent dialog; the track never reached Kie.ai.
+
+Root causes found by new tests (both were invisible to the earlier suite):
+
+1. `Sheet::close` (animated path) cleared `shown.onChange` from inside that same callback, destroying the
+   running lambda and the captured button action (undefined behaviour: the action silently never ran, or crashed).
+   Tests ran with motion disabled, so they took the non-animated path. Fixed with a fire-once flag.
+   Affected every confirm sheet with animations on.
+2. `BridgeApiAdapter` sent `MemoryBlock::toBase64Encoding()`, which is JUCE's own `<size>.<alphabet>` format,
+   not RFC 4648. The bridge's `base64.b64decode(validate=True)` rejected it (`audio_context_rejected`).
+   Now `juce::Base64::toBase64`; a unit test pins the exact encoding.
+
+Hardening: a request with Send my track on re-checks stale capabilities, then either sends the track or fails with a
+clear reason (never silently drops it); the provider refuses to submit without it; the editor re-tests an offline
+bridge every 10 s; the button follows the user's choice for any bridge.
+
+Tests added: `SendTrackTests` (button + consent sheet, motion off and on; worker: stale caps, status line,
+bridge without audio, nothing heard), `BridgeE2ETests` "Send my track" (Context's real provider -> kie_bridge ->
+fake Kie.ai, layer and restyle; the script asserts the bridge logged and uploaded the track).
+
+Run here (Linux): `ContextTests --unit` 5693 checks, 0 failed; `ctest` 5/5; `run_kie_bridge_e2e.py` passes
+with and without the MP3 decoder. Not verified: a real Kie.ai account, Windows/FL Studio by hand.

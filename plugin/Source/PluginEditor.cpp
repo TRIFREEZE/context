@@ -197,6 +197,14 @@ void ContextAudioProcessorEditor::timerCallback()
 {
     if (currentTab == "generate")
         workspace.tick();
+    // A bridge that was offline (or started after the DAW) is picked up without a manual test:
+    // re-test every 10 s while the window is open and the last test didn't connect.
+    if (ticks % 300 == 299)
+    {
+        const auto st = processor.generation().getConnectionResult().status;
+        if (st == ConnectionStatus::Unknown || st == ConnectionStatus::Disconnected || st == ConnectionStatus::ConnectionRefused)
+            processor.generation().testConnection();
+    }
     if (++ticks % 15 == 0)
     {
         refreshUndoButtons();

@@ -31,6 +31,17 @@ your DAW.
 * Everything is saved with the DAW project (settings and references only — no audio, no
   credentials). Older projects load unchanged.
 
+### New in V2.1.1 (Send my track fix)
+
+* **Send my track works.** Two bugs stopped it: the plugin encoded your track in JUCE's private
+  base64 variant, which the bridge rejected; and with animations on, the confirm button in every
+  dialog (including "Allow and turn on") never ran its action, so the switch stayed off.
+* If your track can't be sent, the request stops and tells you why (old bridge, nothing heard yet)
+  instead of generating without it. Context re-checks the bridge on its own (when you turn Send my
+  track on, before sending, and every 10 s while the bridge is offline), so a bridge started or
+  updated after the DAW is picked up without clicking Test Connection.
+* While sending, the status line says what goes out, e.g. "Sending your 8 bars (Layer)...".
+
 ### New in V2.1
 
 * **Send my track** — the captured bars go to the bridge so results are made *on* your track:

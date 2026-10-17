@@ -355,8 +355,14 @@ def main():
             print("Context plugin code (LocalGenerationBridgeProvider) through the bridge")
             cmd = [args.tests_exe, f"--bridge-e2e={bridge}"]
             print("Running:", " ".join(cmd), flush=True)
-            rc = subprocess.call(cmd, timeout=300)
+            before = len(open(bproc.log_path).read())
+            env = dict(os.environ, CONTEXT_E2E_MP3="1" if have_miniaudio() else "0")
+            rc = subprocess.call(cmd, timeout=300, env=env)
             check(rc == 0, "ContextTests --bridge-e2e passes")
+            plugin_log = open(bproc.log_path).read()[before:]
+            check("s of track context" in plugin_log and "uploading" in plugin_log,
+                  "the plugin's Send my track requests reached the bridge with the track and were uploaded to (fake) Kie.ai")
+            check("test-key" not in plugin_log, "API key never appears in the bridge's output")
     finally:
         for p in PROCS:
             p.terminate()

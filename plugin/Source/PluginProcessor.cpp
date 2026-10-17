@@ -477,12 +477,18 @@ GenerationRequest ContextAudioProcessor::makeRequest (const UiState& s) const
             r.bpm = tempo.bpm;
     }
 
+    // With "Send my track" on, the request always asks for it; the worker re-checks the bridge
+    // (capabilities here may be stale) and either sends the track or stops with the reason.
     const bool consent = shared->settings().get().allowSendAudioContext;
     const auto modes = generationController->getCapabilities().usableContextModes();
-    if (s.sendAudioContext && consent && ! modes.isEmpty())
+    const auto provider = generationController->getProvider();
+    const bool bridge = provider != nullptr && provider->id() == "bridge";
+    if (s.sendAudioContext && consent && (bridge || ! modes.isEmpty()))
     {
         r.audioContext = AudioConditioningPayload{};   // filled on the worker at send time
-        r.contextMode = modes.contains (s.contextMode) ? s.contextMode : modes[0];
+        r.contextMode = modes.isEmpty() || modes.contains (s.contextMode) ? s.contextMode : modes[0];
+        if (r.contextMode.isEmpty())
+            r.contextMode = contextmode::layer;
     }
     return r;
 }
@@ -506,7 +512,9 @@ GenerationRequest ContextAudioProcessor::requestFromResult (const GenerationResu
     // Same style: a result that was generated on the track context is regenerated on it again.
     const auto mode = src.metadata.getWithDefault ("contextMode", juce::var()).toString();
     const auto modes = generationController->getCapabilities().usableContextModes();
-    if (mode.isNotEmpty() && modes.contains (mode) && shared->settings().get().allowSendAudioContext)
+    const auto provider = generationController->getProvider();
+    const bool bridge = provider != nullptr && provider->id() == "bridge";
+    if (mode.isNotEmpty() && (modes.contains (mode) || (bridge && modes.isEmpty())) && shared->settings().get().allowSendAudioContext)
     {
         r.audioContext = AudioConditioningPayload{};
         r.contextMode = mode;

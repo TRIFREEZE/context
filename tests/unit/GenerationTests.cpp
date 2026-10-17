@@ -218,6 +218,9 @@ public:
             expectEquals (*json::getNumber (json::getPath (cb, "audioContext"), "bars"), 8.0);
             expectEquals (*json::getNumber (json::getPath (cb, "audioContext"), "seconds"), 16.0);
             expect (json::getString (json::getPath (cb, "audioContext"), "data").has_value());
+            // Standard RFC 4648 base64, exactly what Python's base64.b64decode(validate=True) accepts:
+            // "RIFF....WAVE" -> "UklGRi4uLi5XQVZF" (JUCE's MemoryBlock::toBase64Encoding is a different format).
+            expectEquals (json::getString (json::getPath (cb, "audioContext"), "data").value_or (""), juce::String ("UklGRi4uLi5XQVZF"));
 
             const auto rt = GenerationRequest::fromVar (withCtx.toVar());
             expectEquals (rt.contextMode, juce::String ("layer"), "context mode is kept in history");

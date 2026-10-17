@@ -341,22 +341,65 @@ void GenerationController::runPipeline (const JobPtr& job, IAudioGenerationProvi
     };
 
     // ---- 1. Optional audio context (only when the user explicitly enabled it) ----
+    // The user asked for their track to be sent, so it is sent or the job stops with the reason.
+    // It is never silently dropped (that would spend credits on a result made without it).
     TempFileGuard audioContextGuard;
-    if (request.audioContext.has_value() && deps.makeAudioContext)
+    if (request.audioContext.has_value())
     {
-        if (auto payload = deps.makeAudioContext (request.requestId))
+        // What we know about the bridge may be stale (it was restarted or updated since the last
+        // Test Connection), so ask it again before deciding it can't take audio.
+        if (! p.getCapabilities().has (Feature::AudioConditioning))
         {
-            request.audioContext = payload;
-            audioContextGuard.file = payload->wavFile;
+            update (job, [] (JobSnapshot& s) { s.state = JobState::Submitting; s.statusText = "Checking that your bridge takes your track..."; });
+            auto fresh = p.testConnection (token);
+            if (cancelled()) return;
+            if (fresh.capabilities.has_value())
+            {
+                {
+                    const juce::ScopedLock sl (lock);
+                    connection = fresh;
+                }
+                sendChangeMessage();
+            }
         }
-        else
+        const auto modes = p.getCapabilities().usableContextModes();
+        if (modes.isEmpty())
         {
-            request.audioContext.reset();
+            auto e = ProviderError::make (ErrorCode::Unsupported, "Send my track is on, but the bridge does not list audio_conditioning in /context/v1/capabilities");
+            e.userMessage = "Your track wasn't sent: this bridge doesn't accept track audio. Start the Kie.ai bridge from the V2.1 folder "
+                            "(version 1.1.0 or newer), click Test Connection, then try again.";
+            finish (job, JobState::Failed, e);
+            return;
+        }
+        if (! modes.contains (request.contextMode))
+            request.contextMode = modes[0];
+
+        std::optional<AudioConditioningPayload> payload;
+        if (deps.makeAudioContext)
+            payload = deps.makeAudioContext (request.requestId);
+        if (! payload.has_value())
+        {
+            auto e = ProviderError::make (ErrorCode::InvalidRequest, "Send my track is on, but there was no captured or recent track audio to send");
+            e.userMessage = "Your track wasn't sent: Context hasn't heard any audio on this track yet. Put Context on the track you want, "
+                            "play a few bars (or capture 8 bars), then generate again.";
+            finish (job, JobState::Failed, e);
+            return;
+        }
+        request.audioContext = payload;
+        audioContextGuard.file = payload->wavFile;
+        {
+            const juce::ScopedLock sl (lock);
+            job->snap.request.contextMode = request.contextMode;
         }
     }
 
     // ---- 2. Submit (retried only when the bridge was unreachable, i.e. never received it) ----
-    update (job, [] (JobSnapshot& s) { s.state = JobState::Submitting; s.statusText = "Sending request..."; s.progress = -1.0; });
+    juce::String sending = "Sending request...";
+    if (request.audioContext.has_value())
+        sending = "Sending your " + (request.audioContext->bars > 0 ? juce::String (request.audioContext->bars) + " bars"
+                                                                    : juce::String (juce::roundToInt (request.audioContext->seconds)) + " s of your track")
+                + " (" + contextmode::label (request.contextMode) + ")...";
+    update (job, [sending] (JobSnapshot& s) { s.state = JobState::Submitting; s.statusText = sending; s.progress = -1.0; });
 
     SubmitResult submitted;
     for (int attempt = 0; attempt < 3; ++attempt)

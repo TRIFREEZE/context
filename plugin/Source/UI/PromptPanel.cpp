@@ -69,6 +69,10 @@ PromptPanel::PromptPanel (ContextAudioProcessor& p) : processor (p)
             return;
         }
         pushUiState();
+        // Turned on while the bridge hasn't confirmed track audio: ask it again now.
+        if (sendAudio.getToggleState() && processor.generation().getCapabilities().usableContextModes().isEmpty()
+            && ! processor.generation().isBusy())
+            processor.generation().testConnection();
         refresh();
     };
     contextMode.setProportional (true);
@@ -108,6 +112,8 @@ void PromptPanel::askToAllowAudio()
                 safe->processor.services().settings().update ([] (Settings& s) { s.allowSendAudioContext = true; });
                 safe->sendAudio.setToggleState (true, juce::dontSendNotification);
                 safe->pushUiState();
+                if (safe->processor.generation().getCapabilities().usableContextModes().isEmpty())
+                    safe->processor.generation().testConnection();
                 safe->refresh();
             } } });
     if (! shown && onStatus)
@@ -192,11 +198,18 @@ void PromptPanel::refresh()
 
     useContext.setToggleState (ui.useTrackContext, juce::dontSendNotification);
     const auto modes = caps.usableContextModes();
-    const bool bridgeTakesAudio = ! modes.isEmpty();
+    // A bridge's capabilities can be stale (restarted or updated since the last test), so for a
+    // bridge the button always follows the user's choice; the request re-checks the bridge and
+    // says plainly if the track can't be sent. Only the built-in mock can never take audio.
+    const auto provider = processor.generation().getProvider();
+    const bool isBridge = provider != nullptr && provider->id() == "bridge";
+    const bool bridgeTakesAudio = ! modes.isEmpty() || isBridge;
     const bool sending = ui.sendAudioContext && settings.allowSendAudioContext && bridgeTakesAudio;
     sendAudio.setEnabled (bridgeTakesAudio);
     sendAudio.setToggleState (sending, juce::dontSendNotification);
-    sendAudio.setTooltip (! bridgeTakesAudio ? "The current generation bridge can't use your track's audio (it still gets tempo and key)."
+    sendAudio.setTooltip (! bridgeTakesAudio ? "The built-in test generator can't use your track's audio. Switch to your bridge in Settings."
+                          : modes.isEmpty() ? "Sends your captured bars with each request. Your bridge hasn't confirmed it takes track audio yet; "
+                                              "Context checks again when you generate (Kie.ai bridge 1.1.0 or newer)."
                           : ! settings.allowSendAudioContext ? "Send your captured bars with each request so the result is made on your track. Asks first."
                           : "Sends your captured bars with each request, so the result is made on your track.");
     if (modes != modeIds)
