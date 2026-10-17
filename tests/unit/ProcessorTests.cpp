@@ -326,7 +326,22 @@ public:
             expectEquals (corrupt.size(), 0);
             expect (dir.findChildFiles (juce::File::findFiles, false, "history.corrupt-*").size() == 1);
 
-            file.replaceWithText (R"({"entries":[{"generationId":"x","localFile":"relative.wav"},{"generationId":"y","localFile":"/abs/y.wav"},42,null]})");
+            // One relative path (rejected), one real absolute path for this OS (kept), and junk entries.
+            // Built with juce::JSON so Windows backslashes are escaped correctly.
+            juce::Array<juce::var> entries;
+            juce::DynamicObject::Ptr rel = new juce::DynamicObject();
+            rel->setProperty ("generationId", "x");
+            rel->setProperty ("localFile", "relative.wav");
+            juce::DynamicObject::Ptr abs = new juce::DynamicObject();
+            abs->setProperty ("generationId", "y");
+            abs->setProperty ("localFile", dir.getChildFile ("y.wav").getFullPathName());
+            entries.add (juce::var (rel.get()));
+            entries.add (juce::var (abs.get()));
+            entries.add (42);
+            entries.add (juce::var());
+            juce::DynamicObject::Ptr root = new juce::DynamicObject();
+            root->setProperty ("entries", entries);
+            file.replaceWithText (juce::JSON::toString (juce::var (root.get())));
             HistoryStore partial (file, worker);
             expectEquals (partial.size(), 1);
         }

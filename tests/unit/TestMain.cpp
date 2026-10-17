@@ -3,8 +3,21 @@
 //   ContextTests --category=Prompt              run one category
 //   ContextTests --integration=<bridgeUrl>      run bridge integration tests against a live bridge
 #include <juce_core/juce_core.h>
+#include <cstdio>
 #include <juce_events/juce_events.h>
 #include "TestSupport.h"
+
+/** JUCE's default runner logs through juce::Logger, which on Windows goes to the debugger
+    (invisible in CI). This one prints straight to the console so failures show in GitHub logs. */
+class ConsoleTestRunner final : public juce::UnitTestRunner
+{
+public:
+    void logMessage (const juce::String& message) override
+    {
+        std::printf ("%s\n", message.toRawUTF8());
+        std::fflush (stdout);
+    }
+};
 
 int main (int argc, char* argv[])
 {
@@ -13,7 +26,7 @@ int main (int argc, char* argv[])
 
     context::test::ensureIsolatedAppDataDir();
 
-    juce::UnitTestRunner runner;
+    ConsoleTestRunner runner;
     runner.setAssertOnFailure (false);
 
     if (args.containsOption ("--integration"))
@@ -59,6 +72,14 @@ int main (int argc, char* argv[])
         passes += runner.getResult (i)->passes;
     }
 
+    if (failures > 0)
+    {
+        std::printf ("\nFailed checks:\n");
+        for (int i = 0; i < runner.getNumResults(); ++i)
+            for (auto& m : runner.getResult (i)->messages)
+                std::printf ("  [%s / %s] %s\n", runner.getResult (i)->unitTestName.toRawUTF8(),
+                             runner.getResult (i)->subcategoryName.toRawUTF8(), m.toRawUTF8());
+    }
     std::printf ("\n==== %d checks passed, %d failed ====\n", passes, failures);
     juce::DeletedAtShutdown::deleteAll();
     return failures == 0 ? 0 : 1;

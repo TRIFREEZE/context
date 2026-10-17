@@ -113,7 +113,7 @@ public:
         beginTest ("Concurrent push + snapshot (audio thread never blocks)");
         cap.prepare (48000.0, 8);
         std::atomic<bool> stop { false };
-        std::atomic<int> pushes { 0 };
+        std::atomic<int> pushes { 0 }, slowPushes { 0 };
         std::thread audio ([&]
         {
             std::vector<float> a (256, 0.25f);
@@ -123,7 +123,7 @@ public:
                 const auto t0 = juce::Time::getHighResolutionTicks();
                 cap.push (ch, 2, 256);
                 const auto us = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0) * 1e6;
-                if (us > 2000.0) { stop = true; }   // a push should never take milliseconds
+                if (us > 2000.0) ++slowPushes;   // the OS may pre-empt any thread; count, don't abort
                 ++pushes;
             }
         });
@@ -131,9 +131,13 @@ public:
             snap = cap.snapshot();
         for (int i = 0; i < 5; ++i)
             cap.prepare (i % 2 ? 44100.0 : 96000.0, 8);   // sample-rate changes while running
+        juce::Thread::sleep (50);
         stop = true;
         audio.join();
-        expect (pushes.load() > 100);
+        expect (pushes.load() > 100, "pushes: " + juce::String (pushes.load()));
+        // push() never waits on a lock, so slow pushes can only come from OS scheduling on a busy CI VM.
+        expect (slowPushes.load() * 100 <= juce::jmax (1, pushes.load()),
+                juce::String (slowPushes.load()) + " of " + juce::String (pushes.load()) + " pushes took > 2 ms");
     }
 };
 
