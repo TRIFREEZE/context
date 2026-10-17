@@ -195,11 +195,11 @@ void WaveformLane::paintGenerating (juce::Graphics& g, juce::Rectangle<float> ar
     const bool moving = motion::enabled();
     const double t = moving ? (motion::nowMs() - generatingStartMs) / 1000.0 : 0.0;
 
-    // The old take steps back.
+    // The old take makes way completely: the lane shows only what is being made.
     if (! empty)
     {
-        g.setColour (colours::well.withAlpha (0.86f * fade));
-        g.fillRect (area);
+        g.setColour (colours::well.withAlpha (fade));
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), radius::control);
     }
 
     // Where the "writing" head is: the real progress when the generator reports it, otherwise a
@@ -253,7 +253,10 @@ void WaveformLane::paintGenerating (juce::Graphics& g, juce::Rectangle<float> ar
     // Status, on a quiet pill.
     const auto f1 = font (type::body, Weight::SemiBold), f2 = font (type::label);
     const juce::String title = "Generating";
-    const auto status = generatingStatus;
+    // The status only when it adds something ("Sending your 8 bars", "Queued"), not "Generating..." again.
+    auto status = generatingStatus.trim();
+    if (status.startsWithIgnoreCase ("generating"))
+        status = generatingProgress >= 0.0 ? juce::String (juce::roundToInt (generatingProgress * 100.0)) + "%" : juce::String();
     const float w1 = (float) juce::GlyphArrangement::getStringWidthInt (f1, title);
     const float w2 = status.isNotEmpty() ? (float) juce::GlyphArrangement::getStringWidthInt (f2, status) : 0.0f;
     // 14 pad + 6 dot + 6 gap + title + (10 gap + status) + 16 pad

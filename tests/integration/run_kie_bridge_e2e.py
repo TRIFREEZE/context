@@ -338,8 +338,23 @@ def main():
                     frames = w.readframes(w.getnframes())
                 peak = max(abs(int.from_bytes(frames[i:i + 2], "little", signed=True)) for i in range(0, len(frames), 2 * 97))
                 check(peak > 3000, f"the kept part has the vocal in it, not the silent intro (peak {peak})")
-            check("kept the vocal from bars 11-12" in open(bproc.log_path).read(),
-                  "the bridge window says which bars were kept")
+            check("lined it up from its bar 11" in open(bproc.log_path).read(),
+                  "the bridge window says where the part was lined up from")
+
+        # The vocal only in the last 0.3 s of the answer: moved to the bar line before it.
+        st, s = generate(bridge, "breathy vocal #tail", "vocal", audioContext=actx, contextMode="layer")
+        if s.get("status") == "complete":
+            ok, data = fetch_wav(bridge, s)
+            secs = wav_seconds(data) if ok else 0
+            with wave.open(io.BytesIO(data)) as w:
+                frames = w.readframes(w.getnframes())
+            n = len(frames) // 4
+            head = max(abs(int.from_bytes(frames[i * 4:i * 4 + 2], "little", signed=True)) for i in range(0, n // 2, 13))
+            check(ok and abs(secs - 2.1) < 0.05, f"kept from the bar line before the vocal ({secs:.2f} s)")
+            check(head == 0 and "lined it up from its bar 2" in open(bproc.log_path).read(),
+                  "starts on bar 2's line, the vocal 1.8 s in (it lines up with the beat, not shifted off-grid)")
+        else:
+            check(False, f"tail vocal layer completes ({s})")
 
         # Separation refused by both routes: the paid generation is still delivered (whole mix).
         if mp3_ok:

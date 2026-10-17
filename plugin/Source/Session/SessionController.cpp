@@ -1462,10 +1462,22 @@ void SessionController::requestRender()
                     continue;
                 if (d.audio != nullptr)
                 {
+                    const bool firstFit = it->second.fitted == nullptr;
                     it->second.fitted = d.audio;
                     it->second.peaks = d.peaks;
                     it->second.report = d.report;
                     it->second.fitKey = d.key;
+                    // A generated take with (almost) nothing in it: say so once, rather than leave
+                    // the producer wondering whether playback is broken.
+                    if (firstFit && d.audio->getNumSamples() > 0)
+                    {
+                        float peak = 0.0f;
+                        for (int ch = 0; ch < d.audio->getNumChannels(); ++ch)
+                            peak = juce::jmax (peak, d.audio->getMagnitude (ch, 0, d.audio->getNumSamples()));
+                        const auto* t = getState().findTake (d.id);
+                        if (t != nullptr && t->kind == edit::Take::Kind::Generated && peak < 0.004f)   // about -48 dBFS
+                            notify ("Take " + d.id.substring (1) + " came back almost silent from the generator. Pass it, or try New take.", true);
+                    }
                 }
                 if (d.id == base)
                 {

@@ -329,8 +329,25 @@ void EffectRackPanel::showAddMenu()
     const auto& reg = chain.registry();
     int id = 1;
     std::vector<juce::String> ids;
-    for (auto& cat : reg.categories())
+    // Two columns, split where the rows balance, so the whole list fits inside the window.
+    const auto cats = reg.categories();
+    int totalRows = 0;
+    for (auto& cat : cats)
     {
+        ++totalRows;
+        for (auto& t : reg.types()) totalRows += t.category == cat ? 1 : 0;
+    }
+    int rows = 0;
+    bool broke = false;
+    for (auto& cat : cats)
+    {
+        if (! broke && rows * 2 >= totalRows)
+        {
+            m.addColumnBreak();
+            broke = true;
+        }
+        ++rows;
+        for (auto& t : reg.types()) rows += t.category == cat ? 1 : 0;
         m.addSectionHeader (cat);
         for (auto& t : reg.types())
             if (t.category == cat)

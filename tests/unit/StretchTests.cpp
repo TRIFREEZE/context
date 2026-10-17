@@ -473,6 +473,43 @@ public:
             req.source = earlyTake;
             expectEquals (timefit::render (req).report.alignedStartBar, 0, "sound from bar 1: kept from bar 1");
         }
+
+        beginTest ("Aligned result whose part only starts at its very end (a real Kie.ai answer): moved to a bar line and looped");
+        {
+            const musical::Tempo t118 { 118.0, {} };
+            // 8.09 bars long, silent except the last ~0.3 s (the vocal Kie.ai put right at the end).
+            const int len = (int) (musical::samplesForBars (8, t118, sr) * 1.0112);
+            juce::AudioBuffer<float> take (2, len);
+            take.clear();
+            auto blip = tone (440.0, (int) (0.3 * sr));
+            for (int ch = 0; ch < 2; ++ch)
+                take.copyFrom (ch, len - blip.getNumSamples(), blip, ch, 0, blip.getNumSamples());
+            auto lateTake = std::make_shared<AudioAsset> (*asset (take));
+            lateTake->origin = AudioAsset::Origin::Generated;
+            lateTake->alignedToContext = true;
+            FitRequest req;
+            req.source = lateTake;
+            req.tempo = t118;
+            req.bars = 8;
+            req.outputRate = sr;
+            for (auto mode : { FitMode::Auto, FitMode::Stretch, FitMode::Trim })
+            {
+                req.settings.mode = mode;
+                auto fit = timefit::render (req);
+                expect (fit.ok());
+                expectEquals (fit.report.alignedStartBar, 7, juce::String ("moved to its last bar line (") + toLabel (mode) + ")");
+                const auto barLen = (int) musical::samplesForBars (1, t118, sr);
+                float firstBar = 0.0f;
+                for (int i = 0; i < barLen; i += 7) firstBar = juce::jmax (firstBar, std::abs (fit.audio->getSample (0, i)));
+                expect (firstBar > 0.2f, juce::String ("the part plays in bar 1 (") + toLabel (mode) + ")");
+                if (mode == FitMode::Auto)
+                {
+                    float lastBar = 0.0f;
+                    for (int i = 7 * barLen; i < 8 * barLen; i += 7) lastBar = juce::jmax (lastBar, std::abs (fit.audio->getSample (0, i)));
+                    expect (fit.report.modeUsed == FitMode::Loop && lastBar > 0.2f, "Auto loops it in whole bars, so bar 8 isn't silent either");
+                }
+            }
+        }
     }
 };
 

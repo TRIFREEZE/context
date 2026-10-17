@@ -31,6 +31,19 @@ your DAW.
 * Everything is saved with the DAW project (settings and references only — no audio, no
   credentials). Older projects load unchanged.
 
+### MVP polish (V2.2.1)
+
+* **Late parts line up.** When Kie.ai puts the layer late (a vocal only in the last 0.3 s, or after
+  a long intro), the bridge (1.1.3) and Context find where the sound starts and move it to the bar
+  line before it, preferring whole loops / 4-bar phrases so it stays over the same chords. Shorter
+  than your bars? It loops in whole bars, in every Fit mode. An almost silent take now says so.
+* While generating, the old take (and its clip strips) make way: only the animation shows, and
+  the status no longer says "Generating" twice.
+* Menus are larger and easier to read (bigger text, taller rows, clear section headings); the
+  effects list is in two columns so it fits the window.
+* Slider value pop-ups (lane levels) use Context's look instead of JUCE's default.
+* Keep / Pass card: pill buttons sitting concentric in the card, even spacing, icons centred.
+
 ### New in V2.2 (Keep / Pass)
 
 * **Keep / Pass** floats over each new take. **Keep** marks it kept (and a Favorite). **Pass** asks

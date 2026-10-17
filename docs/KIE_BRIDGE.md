@@ -77,10 +77,13 @@ captured 8 bars to the bridge, and the bridge:
   capture), so Context keeps every sample where it is: no stretching, no silence trimming.
 * **Settings** (in `config.json`): `context_audio_weight` (0–1, default `0.8`: how strongly Kie.ai
   follows your audio) and `negative_tags` (default `low quality, muffled, clipping`).
-* **Long results:** Kie.ai can answer your 8 bars with a whole song (a user got 77.6 s) whose new
-  part only starts after an intro. The bridge (1.1.1) keeps one context-length window on your bar
-  grid: the first one with at least 90 % of the loudest window's sound. Its window says which bars
-  it kept ("kept the vocal from bars 17-24").
+* **Late parts:** Kie.ai can answer your 8 bars with a whole song (a user got 77.6 s) whose part
+  only starts after an intro, or with a vocal that only comes in during the last fraction of a
+  second. When more than half of your bars would be silent, the bridge (1.1.3) finds where the
+  sound starts (within 30 dB of its peak) and keeps up to your bars from the bar line before it:
+  stepping back in whole loops when that leaves at most one bar of lead-in, else 4, 2 or 1 bar(s),
+  so the part stays over the same chords. Its window says what it did ("lined it up from its bar
+  11"), and notes when the part is mostly silence.
 * **Stem separation** is asked by task id + audio id first (the documented example). Kie.ai has
   answered "Record does not exist" for results made from uploaded audio, so the bridge then uses the
   documented `audio_url` input with the clip's link. If separation still fails, or the stem is

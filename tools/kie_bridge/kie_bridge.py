@@ -59,7 +59,7 @@ try:  # optional: MP3 -> WAV fallback
 except Exception:  # pragma: no cover - depends on the user's machine
     miniaudio = None
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 PROTOCOL = "context-bridge-v1"
 TYPES = ["one_shot", "loop", "vocal", "instrument", "percussion", "texture", "fx", "melody"]
 DEFAULT_API_BASE = "https://api.kie.ai"
@@ -663,44 +663,39 @@ def grid_phase(context_path: str, mix_path: str, bar_seconds: float) -> float:
     return best_lag * 0.02 if best >= 0.5 else 0.0
 
 
-def pick_window(path: str, window_seconds: float, step_seconds: float, phase_seconds: float = 0.0):
-    """Start (seconds) of the window that should be kept from a result longer than the context.
-
-    Windows start on the context's grid (phase + k * step). The earliest window with at least 90 %
-    of the loudest window's energy wins, so a silent intro is skipped but an early, solid part is
-    kept. None when the file can't be read or isn't longer than one window."""
+def sound_span(path: str, floor_db: float = -30.0):
+    """(first, last, total) seconds where the audio is within `floor_db` of its peak, or None."""
     r = read_mono16(path)
-    if not r or window_seconds <= 0 or step_seconds <= 0:
+    if not r:
         return None
     rate, mono = r
-    total = len(mono) / float(rate)
-    if total < window_seconds + step_seconds * 0.5:
-        return None
-    hop = 0.05
+    hop = 0.02
     env = envelope(rate, mono, hop_seconds=hop)
-    prefix = [0.0]
-    for v in env:
-        prefix.append(prefix[-1] + v * v)
-
-    def energy(start):
-        a = int(round(start / hop))
-        b = min(len(env), a + int(round(window_seconds / hop)))
-        return prefix[b] - prefix[a] if b > a else 0.0
-
-    starts, t = [], phase_seconds
-    while t + window_seconds <= total + 0.02:
-        starts.append(t)
-        t += step_seconds
-    if not starts:
+    if not env:
         return None
-    energies = [energy(x) for x in starts]
-    best = max(energies)
-    if best <= 0:
+    peak = max(env)
+    if peak <= 0:
         return None
-    for x, e in zip(starts, energies):
-        if e >= 0.9 * best:
-            return x
-    return starts[0]
+    thr = peak * (10.0 ** (floor_db / 20.0))
+    loud = [i for i, v in enumerate(env) if v >= thr]
+    return loud[0] * hop, (loud[-1] + 1) * hop, len(mono) / float(rate)
+
+
+def grid_start(onset: float, bar: float, phase: float, loop_bars: int) -> float:
+    """Where to start so the part begins on the grid: the bar line before `onset`, stepping back
+    in whole loops (`loop_bars`), else 4, 2 or 1 bar(s) - the largest step that leaves at most one
+    bar of lead-in. Moving by whole loops/phrases keeps the part over the same chords."""
+    steps = []
+    for k in (loop_bars, 4, 2, 1):
+        if k and 1 <= k <= max(1, loop_bars) and k not in steps:
+            steps.append(k)
+    rel = max(0.0, onset - phase)
+    for k in steps:
+        length = k * bar
+        start = math.floor(rel / length) * length
+        if rel - start <= bar + 1e-6:
+            return phase + start
+    return phase + math.floor(rel / bar) * bar
 
 
 def cut_wav_window(path: str, start: float, length: float) -> bool:
@@ -1291,34 +1286,45 @@ class Bridge:
         return final
 
     def _keep_part_with_sound(self, job: Job, final: str, clip: dict, ctx: "ContextAudio", tmp_paths: list, what: str):
-        """Kie.ai often returns far more than the uploaded bars (a 78 s song for 8 bars) and the new
-        part may only start later, so keeping the first bars can give silence. Keep one context-length
-        window on the context's bar grid: the first one with real sound in it."""
-        info = wav_info(final)
-        if not info or not to_pcm16(final):
+        """Kie.ai can put the part late: after a long gap, or at the end of a song longer than your
+        bars (a user got 77.6 s back for 8 bars, and a vocal that only came in during the last
+        0.3 s). When more than half of your bars would be silent, move to the bar line where the
+        sound starts (in whole loops / phrases when possible, so it stays over the same chords) and
+        keep at most your bars from there. Context loops a shorter part in whole bars."""
+        if not to_pcm16(final):
             return
-        total = info[0]
-        if total < ctx.seconds + 0.5:
+        span = sound_span(final)
+        if not span:
             return
+        first, last, total = span
         bars = ctx.bars if isinstance(ctx.bars, int) and ctx.bars > 0 else None
-        step = ctx.seconds / bars if bars else ctx.seconds / 4.0
+        bar = ctx.seconds / bars if bars else ctx.seconds / 4.0
+        loop_bars = bars or 4
         phase = 0.0
-        if clip.get("url"):
+        if first > loop_bars * bar * 0.5 and clip.get("url"):
             mix = final + ".mix"
             tmp_paths.append(mix)
             try:
                 download(clip["url"], mix, self.allow_http_loopback)
-                phase = grid_phase(ctx.path, mix, step)
+                phase = grid_phase(ctx.path, mix, bar)
             except Exception:
                 phase = 0.0
-        start = pick_window(final, ctx.seconds, step, phase)
-        if start is None:
+        if first - phase <= loop_bars * bar * 0.5:
+            sounding = (last - first) / max(0.001, min(total, ctx.seconds))
+            if sounding < 0.2:
+                log(f"  {job.id[:8]}: note - the {what} is mostly silence ({last - first:.1f} s of sound); "
+                    f"Pass it in Context or try New take")
             return
-        if cut_wav_window(final, start, ctx.seconds):
-            where = (f"bars {int(round((start - phase) / step)) + 1}-{int(round((start - phase) / step)) + bars}"
-                     if bars else f"{start:.1f}-{start + ctx.seconds:.1f} s")
-            log(f"  {job.id[:8]}: Kie.ai returned {total:.1f} s for your {ctx.seconds:.1f} s; kept the {what} from "
-                f"{where} (in time with your track)")
+        start = grid_start(first, bar, phase, loop_bars)
+        keep = min(ctx.seconds, total - start)
+        if keep <= 0.05 or not cut_wav_window(final, start, keep):
+            return
+        bar_no = int(round((start - phase) / bar)) + 1
+        log(f"  {job.id[:8]}: Kie.ai's {what} only starts {first:.1f} s in (of {total:.1f} s); "
+            f"lined it up from its bar {bar_no} ({keep:.1f} s kept, in time with your track)")
+        if keep < ctx.seconds * 0.5:
+            log(f"  {job.id[:8]}: note - only {keep:.1f} s of {what}: Context will loop it; if it's too little, "
+                f"Pass it or try New take")
 
     def _run(self, job: Job, pipeline, extra_tmp: list):
         tmp_paths = list(extra_tmp)

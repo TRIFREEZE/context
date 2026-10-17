@@ -13,6 +13,20 @@ namespace context::ui
 
     It doesn't train the generator (Kie.ai/Suno can't be fine-tuned from here); it records your
     verdicts and steers prompts and negative tags with them. */
+/** A pill-shaped button for floating cards: sits concentric in a pill, icon + text centred as one. */
+class PillButton : public juce::Button
+{
+public:
+    enum class Kind { Primary, Secondary, Ghost, Toggle };
+    PillButton (const juce::String& text, Kind k, std::optional<IconButton::Icon> icon = std::nullopt);
+    int idealWidth() const;
+    void paintButton (juce::Graphics&, bool over, bool down) override;
+
+private:
+    Kind kind;
+    std::optional<IconButton::Icon> icon;
+};
+
 class KeepPassBar : public juce::Component
 {
 public:
@@ -41,16 +55,15 @@ public:
     std::function<void()> onLayoutChanged;
 
     void paint (juce::Graphics&) override;
-    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     void mouseEnter (const juce::MouseEvent&) override { hovered = true; }
     void mouseExit (const juce::MouseEvent&) override { hovered = false; }
 
     // For tests / screenshots.
-    juce::TextButton& keepButton() { return keep; }
-    juce::TextButton& passButton() { return pass; }
-    juce::TextButton* reasonButton (const juce::String& id);
-    juce::TextButton& confirmPassButton() { return confirmPass; }
+    juce::Button& keepButton() { return keep; }
+    juce::Button& passButton() { return pass; }
+    juce::Button* reasonButton (const juce::String& id);
+    juce::Button& confirmPassButton() { return confirmPass; }
 
 private:
     enum class State { Hidden, Ask, Reasons, Kept, Passed };
@@ -63,8 +76,12 @@ private:
 
     State state = State::Hidden;
     juce::String genId, take, label, doneText, doneDetail;
-    juce::TextButton keep { "Keep" }, pass { "Pass" }, confirmPass { "Pass" }, justPass { "Skip" }, newTake { "New take" };
-    juce::OwnedArray<juce::TextButton> reasons;
+    PillButton keep { "Keep", PillButton::Kind::Primary, IconButton::Icon::Check },
+               pass { "Pass", PillButton::Kind::Secondary, IconButton::Icon::Close },
+               confirmPass { "Pass", PillButton::Kind::Secondary, IconButton::Icon::Close },
+               justPass { "Skip", PillButton::Kind::Ghost },
+               newTake { "New take", PillButton::Kind::Primary, IconButton::Icon::Sparkle };
+    juce::OwnedArray<PillButton> reasons;
     juce::StringArray reasonIds;
     motion::Value shown { 0.0f }, check { 0.0f };
     double leaveAtMs = 0.0;

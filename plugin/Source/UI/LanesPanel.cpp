@@ -263,19 +263,15 @@ juce::String LanesPanel::fitSummary() const
         case FitMode::Stretch: t << "stretched " << pct (r.stretchPercent); break;
         case FitMode::Repitch: t << "repitched " << (r.pitchSemitones >= 0 ? "+" : "") << juce::String (r.pitchSemitones, 1) << " st"; break;
         case FitMode::Loop:    t << "looped " << r.loopRepeats << glyph ("\xc3\x97"); if (r.engineUsed) t << ", each repeat " << pct (r.stretchPercent); break;
-        case FitMode::Trim:
-            if (r.aligned && r.alignedStartBar > 0)
-                t << "kept bars " << (r.alignedStartBar + 1) << glyph ("\xe2\x80\x93") << (r.alignedStartBar + r.targetBars)
-                  << " (the first bars were empty), in time with your track";
-            else
-                t << (r.aligned ? "kept in time with your track" : r.sourceBars < r.targetBars ? "padded" : "trimmed");
-            break;
+        case FitMode::Trim:    t << (r.aligned ? "kept in time with your track" : r.sourceBars < r.targetBars ? "padded" : "trimmed"); break;
         case FitMode::Auto:    break;
     }
     if (r.engineUsed && r.modeUsed != FitMode::Repitch)
         t << " with " << stretch::toLabel (r.algorithmUsed);
     if (std::abs (r.pitchSemitones) > 0.05 && r.modeUsed != FitMode::Repitch)
         t << ", " << (r.pitchSemitones > 0 ? "+" : "") << juce::String (r.pitchSemitones, 1) << " st";
+    if (r.alignedStartBar > 0)
+        t << ", from its bar " << (r.alignedStartBar + 1) << " (where the sound starts)";
     if (r.trimmedStartSeconds + r.trimmedEndSeconds > 0.005)
         t << ", " << juce::String (r.trimmedStartSeconds + r.trimmedEndSeconds, 2) << " s of silence removed";
     if (s.getState().fit.mode == FitMode::Auto)
@@ -424,6 +420,12 @@ void LanesPanel::tick()
         const auto job = gen.getCurrentJob();
         const bool active = gen.isBusy() && ! s.editView().pendingFill.has_value();
         outputLane.setGenerating (active, active ? job.statusText : juce::String(), active ? job.progress : -1.0);
+        // The old take's clips and grips step aside too (a fill keeps them: it shows in its range).
+        if (overlay.isVisible() == active)
+        {
+            overlay.setVisible (! active);
+            if (active) selectionBar.hide();
+        }
     }
     const auto fit = s.fitStatus();
     outputLane.setBusy (fit.rendering || s.outputLane().loading, fit.rendering ? "Fitting to " + juce::String (s.getState().lengthBars) + " bars" : "Loading...",
@@ -577,7 +579,7 @@ void LanesPanel::layoutVerdict()
 {
     // Floats over the lower part of the sound lane, centred (the selection bar uses the top edge).
     const auto lane = outputLane.getBounds();
-    const int w = juce::jmin (verdict.idealWidth(), lane.getWidth() - 16), h = 36;
+    const int w = juce::jmin (verdict.idealWidth(), lane.getWidth() - 16), h = 40;
     verdict.setBounds (juce::Rectangle<int> (w, h).withCentre ({ lane.getCentreX(), lane.getBottom() - h / 2 - 10 }));
 }
 

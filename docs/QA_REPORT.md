@@ -235,3 +235,18 @@ same LookAndFeel calls).
   checks order independence.
 
 Run here (Linux): `--unit` 5777 checks, 0 failed (also reversed); `ctest` 5/5; Kie bridge e2e passes.
+
+### V2.2.1 MVP polish
+
+* Silent layers (a Melody "Dark female vocal" layer: 8.09 bars, the vocal only in the last ~0.3 s):
+  TimeFit now moves an aligned source to the bar line before its sound when more than half the
+  loop would be silent (largest of loop / 4 / 2 / 1 bar steps leaving <= 1 bar lead-in), trims what
+  is left to whole bars and loops it, in every mode. The Kie bridge 1.1.3 does the same with the
+  context's bar grid (phase from the full mix). Tests: StretchTests (late part, Auto / Fit / Trim;
+  older "never moved" cases unchanged), bridge e2e (#late, #tail).
+* Generating over a take hides the take and the edit overlay; status de-duplicated.
+* Menus: 14.5 px Medium items, 32 px rows, SemiBold uppercase section headings; effects menu in two
+  balanced columns. Slider pop-ups: drawBubble / getSliderPopupFont / placement overridden.
+* Keep / Pass: PillButton (28 px pills in a 40 px pill card, 6 px inset all round, icon + text centred).
+* Almost-silent generated takes (fitted peak below about -48 dBFS) show a notice once.
+Run here: `--unit` 5794 checks, 0 failed (also reversed); `ctest` 5/5; Kie bridge e2e passes.

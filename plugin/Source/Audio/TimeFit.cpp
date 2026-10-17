@@ -115,54 +115,53 @@ namespace
         return out;
     }
 
-    /** For a context-aligned result longer than the target: which whole bar to start from.
-        Bridges (and Kie.ai) can return a long song whose part only starts after an intro; keeping
-        the first bars would give silence. Moves only when the first window is clearly emptier
-        (under a quarter of the energy) than the best one, then takes the earliest window with at
-        least 90 % of the best. Stays on the bar grid, so the result is still in time. */
+    /** For a context-aligned result whose sound starts late: which whole bar to start from.
+
+        Kie.ai (and other bridges) can return a part whose sound only starts after a long gap, or
+        a song longer than the context whose part comes in later; keeping the first bars would
+        give silence. Find where the sound starts (the first moment within 30 dB of the peak) and
+        move back to a bar line in a musically safe step: a whole `bars`-long loop if that leaves
+        at most one bar of lead-in, else 4, 2 or 1 bar(s). Only when more than half the loop would
+        otherwise be silent: a part that comes in at bar 3 is left where it is. */
     int alignedStartBar (const juce::AudioBuffer<float>& st, double rate, const musical::Tempo& tempo, int bars)
     {
-        const auto window = musical::samplesForBars (bars, tempo, rate);
+        const double bar = (double) musical::samplesForBars (1, tempo, rate);
         const auto total = (juce::int64) st.getNumSamples();
-        if (window <= 0 || total < window + musical::samplesForBars (1, tempo, rate))
+        if (bar <= 0.0 || total <= 0)
             return 0;
-        const int hop = juce::jmax (1, (int) (0.05 * rate));
-        std::vector<double> prefix (1, 0.0);
+        const int hop = juce::jmax (1, (int) (0.02 * rate));
+        std::vector<float> env;
+        float peak = 0.0f;
         for (juce::int64 i = 0; i + hop <= total; i += hop)
         {
-            double acc = 0.0;
+            float m = 0.0f;
             for (int ch = 0; ch < st.getNumChannels(); ++ch)
             {
                 const float* d = st.getReadPointer (ch, (int) i);
-                for (int k = 0; k < hop; k += 4)
-                    acc += (double) d[k] * d[k];
+                for (int k = 0; k < hop; k += 2)
+                    m = juce::jmax (m, std::abs (d[k]));
             }
-            prefix.push_back (prefix.back() + acc);
+            env.push_back (m);
+            peak = juce::jmax (peak, m);
         }
-        auto energy = [&] (juce::int64 start)
+        if (peak <= 1.0e-5f)
+            return 0;
+        const float threshold = peak * 0.0316f;           // -30 dB re peak
+        size_t first = 0;
+        while (first < env.size() && env[first] < threshold)
+            ++first;
+        const double onsetBars = (double) first * hop / bar;
+        if (onsetBars <= bars * 0.5)
+            return 0;                                      // a part coming in mid-loop is musical: leave it
+        for (int step : { bars, 4, 2, 1 })
         {
-            const auto a = (size_t) juce::jmin<juce::int64> ((juce::int64) prefix.size() - 1, start / hop);
-            const auto b = (size_t) juce::jmin<juce::int64> ((juce::int64) prefix.size() - 1, (start + window) / hop);
-            return prefix[b] - prefix[a];
-        };
-        std::vector<std::pair<int, double>> windows;
-        for (int bar = 0; ; ++bar)
-        {
-            const auto start = musical::samplesForBars (bar, tempo, rate);
-            if (start + window > total)
-                break;
-            windows.push_back ({ bar, energy (start) });
+            if (step < 1 || step > bars)
+                continue;
+            const int start = (int) std::floor (onsetBars / step) * step;
+            if (onsetBars - start <= 1.0 + 1.0e-6)
+                return start;
         }
-        if (windows.size() < 2)
-            return 0;
-        double best = 0.0;
-        for (auto& w : windows) best = juce::jmax (best, w.second);
-        if (best <= 0.0 || windows.front().second >= 0.25 * best)
-            return 0;
-        for (auto& w : windows)
-            if (w.second >= 0.9 * best)
-                return w.first;
-        return 0;
+        return (int) std::floor (onsetBars);
     }
 
     juce::AudioBuffer<float> runEngine (stretch::Algorithm algo, const juce::AudioBuffer<float>& in, double ratio, double pitch,
@@ -351,6 +350,31 @@ FitResult render (const FitRequest& req, const stretch::TimeStretchEngine::Progr
     auto working = req.source;
     if (req.settings.tighten)
         working = tighten (req.source, req.tempo, rep.trimmedStartSeconds, rep.trimmedEndSeconds);
+    // Made on the context but its sound starts late: start from the right bar line, in every
+    // mode (shorter what's left? Auto loops it in whole bars below).
+    if (working->alignedToContext && working->isValid())
+    {
+        const int startBar = alignedStartBar (working->audio, working->sampleRate, req.tempo, req.bars);
+        const auto off = musical::samplesForBars (startBar, req.tempo, working->sampleRate);
+        if (startBar > 0 && off < working->audio.getNumSamples())
+        {
+            auto moved = std::make_shared<AudioAsset> (*working);
+            const int n = working->audio.getNumSamples() - (int) off;
+            moved->audio.setSize (working->audio.getNumChannels(), n);
+            for (int ch = 0; ch < working->audio.getNumChannels(); ++ch)
+            {
+                moved->audio.copyFrom (ch, 0, working->audio, ch, (int) off, n);
+                moved->audio.applyGainRamp (ch, 0, juce::jmin (n, (int) (0.003 * working->sampleRate)), 0.0f, 1.0f);
+            }
+            // Shorter than the loop now: keep whole bars, so it can repeat on the grid.
+            const double leftBars = n / (double) musical::samplesForBars (1, req.tempo, working->sampleRate);
+            if (leftBars < req.bars && leftBars >= 1.0)
+                moved->audio.setSize (moved->audio.getNumChannels(),
+                                      (int) musical::samplesForBars (std::floor (leftBars + 1.0e-6), req.tempo, working->sampleRate), true);
+            working = moved;
+            rep.alignedStartBar = startBar;
+        }
+    }
     const auto& src = *working;
     rep.aligned = src.alignedToContext;
     const double rate = req.outputRate;
@@ -370,7 +394,11 @@ FitResult render (const FitRequest& req, const stretch::TimeStretchEngine::Progr
     // Short one-shots never get stretched in Auto (a kick stays a kick on bar 1).
     const bool shortSound = rep.sourceSeconds < 0.6 * musical::secondsForBars (1, req.tempo);
     FitMode mode = req.settings.mode == FitMode::Auto ? chooseMode (rep.sourceBars, req.bars, shortSound) : req.settings.mode;
-    if (rep.aligned && req.settings.mode == FitMode::Auto)
+    // A moved part shorter than the loop repeats in whole bars in every mode (stretching one bar
+    // over eight would be nothing like what was generated).
+    if (rep.alignedStartBar > 0 && rep.sourceBars + 0.05 < req.bars && loopUnitBars (rep.sourceBars, req.bars) > 0)
+        mode = FitMode::Loop;
+    else if (rep.aligned && req.settings.mode == FitMode::Auto)
     {
         // Generated on the context at the context's tempo: keep every sample where it is.
         const int unit = loopUnitBars (rep.sourceBars, req.bars);
@@ -487,13 +515,7 @@ FitResult render (const FitRequest& req, const stretch::TimeStretchEngine::Progr
                 st = runEngine (algo, st, 1.0, pitch, rate, progress);
                 rep.engineUsed = true;
             }
-            juce::int64 offset = 0;
-            if (rep.aligned)
-            {
-                rep.alignedStartBar = alignedStartBar (st, rate, req.tempo, req.bars);
-                offset = musical::samplesForBars (rep.alignedStartBar, req.tempo, rate);
-            }
-            out = trimTo (st, target, rate, offset);
+            out = trimTo (st, target, rate);
             rep.pitchSemitones = pitch;
             break;
         }

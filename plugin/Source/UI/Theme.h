@@ -130,6 +130,11 @@ public:
                             bool isTicked, bool hasSubMenu, const juce::String& text, const juce::String& shortcutKeyText,
                             const juce::Drawable* icon, const juce::Colour* textColour) override;
     void drawPopupMenuSectionHeader (juce::Graphics&, const juce::Rectangle<int>& area, const juce::String& sectionName) override;
+    void getIdealPopupMenuSectionHeaderSizeWithOptions (const juce::String& text, int standardMenuItemHeight, int& idealWidth, int& idealHeight,
+                                                        const juce::PopupMenu::Options&) override;
+    void drawBubble (juce::Graphics&, juce::BubbleComponent&, const juce::Point<float>& tip, const juce::Rectangle<float>& body) override;
+    juce::Font getSliderPopupFont (juce::Slider&) override;
+    int getSliderPopupPlacement (juce::Slider&) override;
     juce::Font getPopupMenuFont() override;
     void getIdealPopupMenuItemSize (const juce::String& text, bool isSeparator, int standardMenuItemHeight, int& idealWidth, int& idealHeight) override;
     void drawTooltip (juce::Graphics&, const juce::String& text, int width, int height) override;

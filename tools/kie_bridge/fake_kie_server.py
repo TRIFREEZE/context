@@ -12,7 +12,7 @@ bridge shows up as a failure.
     python fake_kie_server.py --port 0 --key test-key --mp3 tests/fixtures/kie_test_tone.mp3
                               [--shape response|resultJson|sunoData]
 
-Prompt triggers: #upfail #sensitive #credits #nowav #already #flakyup #badkey #nosep #late
+Prompt triggers: #upfail #sensitive #credits #nowav #already #flakyup #badkey #nosep #late #tail
 """
 import argparse
 import io
@@ -254,6 +254,9 @@ class H(BaseHTTPRequestHandler):
                 # (served as WAV bytes; the bridge goes by the file's content, not its name).
                 body, ctype = concat_wav(wav_bytes(20.0, freq=0), wav_bytes(8.0, freq=440)), "audio/wav"
                 body = concat_wav(body, wav_bytes(12.0, freq=0))
+            elif stem_of is not None and "#tail" in stem_of["prompt"] and "_Vocals" in name:
+                # The vocal only comes in during the last 0.3 s (as a user saw with add-vocals).
+                body, ctype = concat_wav(wav_bytes(3.8, freq=0), wav_bytes(0.3, freq=440)), "audio/wav"
             elif stem_of is not None and stem_of["model"] == "ai-music-api/upload-and-cover-audio" and "_Vocals" in name:
                 body, ctype = wav_bytes(30.0, freq=0), "audio/wav"     # an instrumental cover has no vocal
             elif name.endswith(".mp3"):

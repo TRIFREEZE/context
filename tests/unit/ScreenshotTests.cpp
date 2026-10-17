@@ -279,6 +279,28 @@ public:
         }
         expect (true);
 
+        beginTest ("Slider value bubble");
+        {
+            ui::ContextLookAndFeel lf;
+            juce::Image img (juce::Image::ARGB, 200, 80, true);
+            {
+                juce::Graphics g (img);
+                g.fillAll (ui::colours::background);
+                struct B : juce::BubbleComponent { void getContentSize (int& w, int& h) override { w = 60; h = 20; } void paintContent (juce::Graphics&, int, int) override {} } bubble;
+                const juce::Rectangle<float> body (60.0f, 18.0f, 76.0f, 28.0f);
+                lf.drawBubble (g, bubble, { 98.0f, 56.0f }, body);
+                g.setColour (ui::colours::text);
+                juce::Slider dummy;
+                g.setFont (lf.getSliderPopupFont (dummy));
+                g.drawText ("-1.7 dB", body, juce::Justification::centred);
+            }
+            auto out = isolatedRoot().getChildFile ("screen-bubble.png");
+            juce::FileOutputStream os (out);
+            juce::PNGImageFormat().writeImageToStream (img, os);
+            logMessage ("  snapshot: " + out.getFullPathName());
+            expect (true);
+        }
+
         beginTest ("Sound lane while generating");
         {
             for (bool withTake : { false, true })

@@ -5,25 +5,77 @@ namespace context::ui
 {
 namespace
 {
-    constexpr int barH = 36, pad = 6, gap = 4;
+    // The card is a 40 px pill; buttons are 28 px pills inset 6 px all round, so they sit
+    // concentric with it. Text starts 16 px in; groups are 6 px apart.
+    constexpr int barH = 40, btnH = 28, inset = (barH - btnH) / 2, gap = 6, textInset = 16;
     int textW (const juce::Font& f, const juce::String& s) { return juce::GlyphArrangement::getStringWidthInt (f, s); }
-    juce::Font titleFont()  { return font (type::body, Weight::SemiBold); }
-    juce::Font detailFont() { return font (type::label); }
-    int buttonW (const juce::TextButton& b, int iconRoom = 0) { return textW (font (type::body, Weight::Medium), b.getButtonText()) + 24 + iconRoom; }
-    // Keep / Pass carry a check / cross: their text starts with spaces that leave room for it.
-    const juce::String keepText = juce::String::repeatedString (" ", 4) + "Keep";
-    const juce::String passText = juce::String::repeatedString (" ", 4) + "Pass";
+    juce::Font titleFont()  { return font (type::body + 0.5f, Weight::SemiBold); }
+    juce::Font detailFont() { return font (type::body - 0.5f); }
+    juce::Font buttonFont() { return font (type::body, Weight::SemiBold); }
 }
+
+// -------------------------------------------------------------------- PillButton
+
+PillButton::PillButton (const juce::String& text, Kind k, std::optional<IconButton::Icon> i)
+    : juce::Button (text), kind (k), icon (i)
+{
+    if (kind == Kind::Toggle)
+        setClickingTogglesState (true);
+}
+
+int PillButton::idealWidth() const
+{
+    return textW (buttonFont(), getButtonText()) + (icon ? 18 : 0) + 28;
+}
+
+void PillButton::paintButton (juce::Graphics& g, bool over, bool down)
+{
+    const auto r = getLocalBounds().toFloat();
+    const float rad = r.getHeight() * 0.5f;
+    const float hv = motion::hoverAmount (*this, over && isEnabled());
+    const float pr = motion::pressAmount (*this, down);
+    const bool on = getToggleState();
+    juce::Colour fill, edge, ink;
+    switch (kind)
+    {
+        case Kind::Primary:   fill = colours::accent.brighter (0.08f * hv).darker (0.12f * pr); edge = fill; ink = colours::background; break;
+        case Kind::Secondary: fill = colours::raised.interpolatedWith (colours::hover, hv); edge = colours::border; ink = colours::text; break;
+        case Kind::Ghost:     fill = colours::hover.withAlpha (0.8f * hv); edge = juce::Colours::transparentBlack; ink = colours::dim.interpolatedWith (colours::text, hv); break;
+        case Kind::Toggle:
+            fill = on ? colours::accent.withAlpha (0.18f + 0.06f * hv) : colours::raised.interpolatedWith (colours::hover, hv);
+            edge = on ? colours::accent.withAlpha (0.8f) : colours::border;
+            ink = on ? colours::accent.brighter (0.25f) : colours::text;
+            break;
+    }
+    if (! isEnabled()) { fill = fill.withMultipliedAlpha (0.45f); ink = ink.withMultipliedAlpha (0.45f); }
+    const auto body = r.reduced (0.5f).translated (0.0f, 0.6f * pr);
+    g.setColour (fill);
+    g.fillRoundedRectangle (body, rad);
+    if (! edge.isTransparent())
+    {
+        g.setColour (edge);
+        g.drawRoundedRectangle (body.reduced (0.5f), rad - 0.5f, 1.0f);
+    }
+    // Icon + text, centred together.
+    const auto f = buttonFont();
+    const float tw = (float) textW (f, getButtonText());
+    const float iconW = icon ? 11.0f : 0.0f, iconGap = icon ? 7.0f : 0.0f;
+    float x = body.getCentreX() - (iconW + iconGap + tw) * 0.5f;
+    if (icon)
+    {
+        IconButton::drawIcon (g, *icon, juce::Rectangle<float> (x, body.getCentreY() - 5.5f, 11.0f, 11.0f),
+                              kind == Kind::Primary ? ink : ink.withMultipliedAlpha (0.85f));
+        x += iconW + iconGap;
+    }
+    g.setColour (ink);
+    g.setFont (f);
+    g.drawText (getButtonText(), juce::Rectangle<float> (x, body.getY(), tw + 2.0f, body.getHeight()), juce::Justification::centredLeft, false);
+}
+
+// -------------------------------------------------------------------- KeepPassBar
 
 KeepPassBar::KeepPassBar()
 {
-    keep.setButtonText (keepText);
-    pass.setButtonText (passText);
-    setStyle (keep, ButtonStyle::Primary);
-    setStyle (pass, ButtonStyle::Secondary);
-    setStyle (confirmPass, ButtonStyle::Secondary);
-    setStyle (justPass, ButtonStyle::Ghost);
-    setStyle (newTake, ButtonStyle::Primary);
     keep.setTooltip ("Keep this take: it is marked as kept and saved to Favorites");
     pass.setTooltip ("Not this one: say what was off, and the take leaves the lane");
     justPass.setTooltip ("Pass without a reason");
@@ -46,9 +98,7 @@ KeepPassBar::KeepPassBar()
 
     for (auto& r : taste::reasons())
     {
-        auto* b = reasons.add (new juce::TextButton (r.label));
-        setStyle (*b, ButtonStyle::Toggle);
-        b->setClickingTogglesState (true);
+        auto* b = reasons.add (new PillButton (r.label, PillButton::Kind::Toggle));
         b->setTooltip (juce::String ("Next takes: ") + r.steer);
         b->onClick = [this] { repaint(); };
         reasonIds.add (r.id);
@@ -74,7 +124,7 @@ KeepPassBar::KeepPassBar()
     setVisible (false);
 }
 
-juce::TextButton* KeepPassBar::reasonButton (const juce::String& id)
+juce::Button* KeepPassBar::reasonButton (const juce::String& id)
 {
     const int i = reasonIds.indexOf (id);
     return i >= 0 ? reasons[i] : nullptr;
@@ -186,21 +236,22 @@ void KeepPassBar::timerTick()
 
 int KeepPassBar::idealWidth() const
 {
+    const int right = inset;                        // buttons sit `inset` from the right edge
     switch (state)
     {
         case State::Ask:
-            return pad + 14 + textW (titleFont(), label) + 8 + textW (detailFont(), "Keep it?") + 26
-                 + buttonW (keep) + gap + buttonW (pass) + pad;
+            return textInset + 6 + 10 + textW (titleFont(), label) + 10 + textW (detailFont(), "Keep it?") + 18
+                 + keep.idealWidth() + gap + pass.idealWidth() + right;
         case State::Reasons:
         {
-            int w = pad + 12 + textW (titleFont(), "What was off?") + 12;
-            for (auto* r : reasons) w += buttonW (*r) - 6 + gap;
-            return w + 8 + buttonW (justPass) + gap + buttonW (confirmPass, 14) + pad;
+            int w = textInset + textW (titleFont(), "What was off?") + 16;
+            for (auto* r : reasons) w += r->idealWidth() - 6 + gap;
+            return w + 6 + justPass.idealWidth() + gap + confirmPass.idealWidth() + right;
         }
         case State::Kept:
         case State::Passed:
-            return pad + 14 + 18 + textW (titleFont(), doneText) + 10 + textW (detailFont(), doneDetail) + 16
-                 + (state == State::Passed ? buttonW (newTake) + pad : pad);
+            return textInset + 14 + 10 + textW (titleFont(), doneText) + 10 + textW (detailFont(), doneDetail) + 18
+                 + (state == State::Passed ? newTake.idealWidth() + right : textInset - 4);
         case State::Hidden: break;
     }
     return 200;
@@ -208,25 +259,23 @@ int KeepPassBar::idealWidth() const
 
 void KeepPassBar::resized()
 {
-    auto r = getLocalBounds().reduced (pad, (getHeight() - (barH - 2 * pad)) / 2);
-    auto place = [&] (juce::TextButton& b, int w) { b.setBounds (r.removeFromRight (w)); r.removeFromRight (gap); };
+    auto r = getLocalBounds().withSizeKeepingCentre (getWidth(), btnH).withTrimmedRight (inset);
+    auto place = [&] (PillButton& b, int w) { b.setBounds (r.removeFromRight (w)); r.removeFromRight (gap); };
     switch (state)
     {
         case State::Ask:
-            place (pass, buttonW (pass));
-            place (keep, buttonW (keep));
+            place (pass, pass.idealWidth());
+            place (keep, keep.idealWidth());
             break;
         case State::Reasons:
-        {
-            place (confirmPass, buttonW (confirmPass, 14));
-            place (justPass, buttonW (justPass));
-            r.removeFromRight (4);
+            place (confirmPass, confirmPass.idealWidth());
+            place (justPass, justPass.idealWidth());
+            r.removeFromRight (6);
             for (int i = reasons.size(); --i >= 0;)
-                place (*reasons[i], buttonW (*reasons[i]) - 6);
+                place (*reasons[i], reasons[i]->idealWidth() - 6);
             break;
-        }
         case State::Passed:
-            place (newTake, buttonW (newTake));
+            place (newTake, newTake.idealWidth());
             break;
         case State::Kept:
         case State::Hidden:
@@ -248,17 +297,17 @@ void KeepPassBar::paint (juce::Graphics& g)
     g.setColour (colours::border);
     g.drawRoundedRectangle (r.reduced (1.5f), (float) barH * 0.5f - 1.5f, 1.0f);
 
-    auto content = getLocalBounds().reduced (pad + 8, 0);
+    auto content = getLocalBounds().withTrimmedLeft (textInset).withTrimmedRight (inset);
     switch (state)
     {
         case State::Ask:
         {
             g.setColour (colours::accent);
             g.fillEllipse ((float) content.getX(), (float) getHeight() * 0.5f - 3.0f, 6.0f, 6.0f);
-            content.removeFromLeft (14);
+            content.removeFromLeft (16);
             g.setColour (colours::text);
             g.setFont (titleFont());
-            g.drawText (label, content.removeFromLeft (textW (titleFont(), label) + 8), juce::Justification::centredLeft, false);
+            g.drawText (label, content.removeFromLeft (textW (titleFont(), label) + 10), juce::Justification::centredLeft, false);
             g.setColour (colours::dim);
             g.setFont (detailFont());
             g.drawText ("Keep it?", content, juce::Justification::centredLeft, false);
@@ -288,27 +337,13 @@ void KeepPassBar::paint (juce::Graphics& g)
             g.setColour (colours::faint);
             g.setFont (detailFont());
             if (state == State::Passed)
-                content.removeFromRight (buttonW (newTake) + pad);
+                content.removeFromRight (newTake.idealWidth() + gap);
             g.drawText (doneDetail, content, juce::Justification::centredLeft, true);
             break;
         }
         case State::Hidden:
             break;
     }
-}
-
-void KeepPassBar::paintOverChildren (juce::Graphics& g)
-{
-    auto iconIn = [&] (juce::TextButton& b, IconButton::Icon icon, juce::Colour c)
-    {
-        if (! b.isVisible()) return;
-        const auto r = b.getBounds().toFloat();
-        const float textWidth = (float) textW (font (type::body, Weight::Medium), b.getButtonText().trim());
-        const float x = r.getCentreX() - textWidth * 0.5f - 6.0f;
-        IconButton::drawIcon (g, icon, juce::Rectangle<float> (x - 10.0f, r.getCentreY() - 5.5f, 11.0f, 11.0f), c);
-    };
-    iconIn (keep, IconButton::Icon::Check, colours::background);
-    iconIn (pass, IconButton::Icon::Close, colours::dim);
 }
 
 } // namespace context::ui

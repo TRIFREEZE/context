@@ -334,12 +334,12 @@ void showMenu (juce::PopupMenu& menu, juce::Component& owner, juce::PopupMenu::O
 
 juce::Font ContextLookAndFeel::getPopupMenuFont()
 {
-    return ui::font (type::body);
+    return ui::font (type::body + 1.5f, Weight::Medium);       // menus are read in passing: a size up
 }
 
 juce::PopupMenu::Options ContextLookAndFeel::getOptionsForComboBoxPopupMenu (juce::ComboBox& box, juce::Label& label)
 {
-    auto o = LookAndFeel_V4::getOptionsForComboBoxPopupMenu (box, label).withStandardItemHeight (26);
+    auto o = LookAndFeel_V4::getOptionsForComboBoxPopupMenu (box, label).withStandardItemHeight (32);
     if (auto* top = box.getTopLevelComponent(); top != nullptr && top != &box && top->isShowing())
         o = o.withParentComponent (top);
     return o;
@@ -358,11 +358,11 @@ void ContextLookAndFeel::getIdealPopupMenuItemSize (const juce::String& text, bo
     if (isSeparator)
     {
         w = 50;
-        h = 7;
+        h = 9;
         return;
     }
-    h = 26;
-    w = juce::GlyphArrangement::getStringWidthInt (getPopupMenuFont(), text) + 52;
+    h = 32;
+    w = juce::GlyphArrangement::getStringWidthInt (getPopupMenuFont(), text) + 64;
 }
 
 void ContextLookAndFeel::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area, bool isSeparator, bool isActive, bool isHighlighted,
@@ -381,13 +381,13 @@ void ContextLookAndFeel::drawPopupMenuItem (juce::Graphics& g, const juce::Recta
         g.setColour (hover);
         g.fillRoundedRectangle (area.reduced (3, 1).toFloat(), radius::control);
     }
-    auto r = area.reduced (10, 0);
+    auto r = area.reduced (12, 0);
     if (isTicked)
     {
         g.setColour (accent);
-        g.fillEllipse ((float) r.getX(), (float) area.getCentreY() - 2.5f, 5.0f, 5.0f);
+        g.fillEllipse ((float) r.getX(), (float) area.getCentreY() - 3.0f, 6.0f, 6.0f);
     }
-    r.removeFromLeft (12);
+    r.removeFromLeft (16);
     g.setColour (! isActive ? disabled.brighter (0.2f) : textColour != nullptr ? *textColour : colours::text);
     g.setFont (getPopupMenuFont());
     g.drawFittedText (text, r, juce::Justification::centredLeft, 1);
@@ -411,9 +411,51 @@ void ContextLookAndFeel::drawPopupMenuItem (juce::Graphics& g, const juce::Recta
 
 void ContextLookAndFeel::drawPopupMenuSectionHeader (juce::Graphics& g, const juce::Rectangle<int>& area, const juce::String& name)
 {
-    g.setColour (colours::faint);
-    g.setFont (labelFont());
-    g.drawText (name, area.reduced (12, 0).withTrimmedTop (4), juce::Justification::centredLeft);
+    g.setColour (colours::dim);
+    g.setFont (ui::font (type::label + 0.5f, Weight::SemiBold));
+    g.drawText (name.toUpperCase(), area.reduced (12, 0).withTrimmedTop (6), juce::Justification::centredLeft);
+}
+
+void ContextLookAndFeel::getIdealPopupMenuSectionHeaderSizeWithOptions (const juce::String& text, int, int& w, int& h, const juce::PopupMenu::Options&)
+{
+    h = 30;
+    w = juce::GlyphArrangement::getStringWidthInt (ui::font (type::label + 0.5f, Weight::SemiBold), text.toUpperCase()) + 40;
+}
+
+// Slider value pop-ups (lane levels, pitch): the same small card as tooltips, with a pointer.
+void ContextLookAndFeel::drawBubble (juce::Graphics& g, juce::BubbleComponent&, const juce::Point<float>& tip, const juce::Rectangle<float>& body)
+{
+    juce::Path p;
+    p.addRoundedRectangle (body.reduced (0.5f), radius::control);
+    const float cx = juce::jlimit (body.getX() + 8.0f, body.getRight() - 8.0f, tip.x);
+    if (tip.y > body.getBottom())                 // pointer below
+    {
+        p.startNewSubPath (cx - 5.0f, body.getBottom() - 0.5f);
+        p.lineTo (cx, juce::jmin (tip.y, body.getBottom() + 5.0f));
+        p.lineTo (cx + 5.0f, body.getBottom() - 0.5f);
+        p.closeSubPath();
+    }
+    else if (tip.y < body.getY())                 // pointer above
+    {
+        p.startNewSubPath (cx - 5.0f, body.getY() + 0.5f);
+        p.lineTo (cx, juce::jmax (tip.y, body.getY() - 5.0f));
+        p.lineTo (cx + 5.0f, body.getY() + 0.5f);
+        p.closeSubPath();
+    }
+    g.setColour (colours::raised);
+    g.fillPath (p);
+    g.setColour (colours::border);
+    g.strokePath (p, juce::PathStrokeType (1.0f));
+}
+
+juce::Font ContextLookAndFeel::getSliderPopupFont (juce::Slider&)
+{
+    return ui::numberFont (type::label + 0.5f, Weight::Medium);
+}
+
+int ContextLookAndFeel::getSliderPopupPlacement (juce::Slider&)
+{
+    return juce::BubbleComponent::above;
 }
 
 void ContextLookAndFeel::drawTooltip (juce::Graphics& g, const juce::String& text, int w, int h)
