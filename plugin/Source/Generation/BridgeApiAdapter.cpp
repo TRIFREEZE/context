@@ -152,8 +152,8 @@ ConnectionTestResult BridgeApiAdapter::parseHealth (const HttpClient::Response& 
     }
     if (! r.connected)
     {
-        // A refused localhost connection fails almost instantly; a silent host times out.
-        t.status = r.elapsedMs < 2000 ? ConnectionStatus::ConnectionRefused : ConnectionStatus::Disconnected;
+        // A refused connection fails quickly (Windows retries SYNs for ~2 s); a silent host runs into the timeout.
+        t.status = r.elapsedMs < 3500 ? ConnectionStatus::ConnectionRefused : ConnectionStatus::Disconnected;
         t.detail = "GET " + healthUrl() + " -> " + (r.transportError.isNotEmpty() ? r.transportError : juce::String ("no response"))
                  + " (" + juce::String (r.elapsedMs) + " ms)";
         return t;

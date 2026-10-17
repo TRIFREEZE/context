@@ -27,3 +27,25 @@ if(Python3_Interpreter_FOUND)
 else()
     message(STATUS "Python 3 not found: bridge integration test disabled")
 endif()
+
+# ---------------------------------------------------------------------------
+# Host test: loads the BUILT Context.vst3 through JUCE's VST3 hosting (like a DAW).
+# ---------------------------------------------------------------------------
+option(CONTEXT_BUILD_HOST_TEST "Build the VST3 host-load test" ON)
+if(CONTEXT_BUILD_HOST_TEST)
+    juce_add_console_app(ContextHostTest PRODUCT_NAME "ContextHostTest" NEEDS_CURL TRUE)
+    target_sources(ContextHostTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host/HostTest.cpp")
+    target_compile_definitions(ContextHostTest PRIVATE
+        JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0 JUCE_PLUGINHOST_AU=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_LV2=0
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(ContextHostTest PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_recommended_config_flags)
+    add_dependencies(ContextHostTest Context_VST3)
+
+    set(_ctx_host_args "${CMAKE_BINARY_DIR}/Context_artefacts/$<CONFIG>/VST3/${CONTEXT_PRODUCT_NAME}.vst3")
+    if(NOT WIN32 AND NOT APPLE)
+        list(APPEND _ctx_host_args --no-editor)   # headless Linux CI has no display for plugin views
+    endif()
+    add_test(NAME vst3_host_load COMMAND ContextHostTest ${_ctx_host_args})
+    set_tests_properties(vst3_host_load PROPERTIES TIMEOUT 300
+        ENVIRONMENT "CONTEXT_APPDATA_DIR=${CMAKE_BINARY_DIR}/host-test-appdata")
+endif()

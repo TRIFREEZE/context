@@ -143,7 +143,7 @@ public:
         expect (a.parseHealth (ok ("x", 500)).status == ConnectionStatus::UnexpectedResponse);
         HttpClient::Response refused; refused.elapsedMs = 5;
         expect (a.parseHealth (refused).status == ConnectionStatus::ConnectionRefused);
-        HttpClient::Response timedOut; timedOut.elapsedMs = 5000;
+        HttpClient::Response timedOut; timedOut.elapsedMs = 6000;
         expect (a.parseHealth (timedOut).status == ConnectionStatus::Disconnected);
 
         beginTest ("Submit parsing");

@@ -2,6 +2,7 @@
 
 #include "LicenseToken.h"
 #include "Core/SerialWorker.h"
+#include "Utils/CancellationToken.h"
 #include <juce_events/juce_events.h>
 #include <atomic>
 
@@ -81,6 +82,7 @@ private:
     Status status = Status::Unlicensed;
     juce::String message;
     UpdateInfo update;
+    CancellationToken::Ptr shutdownToken = CancellationToken::create();   // aborts in-flight requests on destruction
     std::atomic<bool> licensedFlag { false };
     std::atomic<juce::int64> offlineUntilMs { 0 };
 

@@ -1,5 +1,6 @@
 #include "BridgeConfiguration.h"
 #include "Utils/Json.h"
+#include <tuple>
 
 namespace context
 {
@@ -67,7 +68,8 @@ juce::String BridgeConfiguration::validate() const
     if (name.length() > 100)
         return "Profile name is too long";
 
-    for (auto [n, p, opt] : { std::tuple<const char*, juce::String, bool> { "healthPath", healthPath, false },
+    using Check = std::tuple<const char*, juce::String, bool>;
+    for (const auto& [n, p, opt] : std::initializer_list<Check> { { "healthPath", healthPath, false },
                               { "capabilitiesPath", capabilitiesPath, true }, { "generatePath", generatePath, false },
                               { "statusPath", statusPath, ! supportsPolling }, { "cancelPath", cancelPath, true },
                               { "downloadPath", downloadPath, true } })
@@ -79,7 +81,7 @@ juce::String BridgeConfiguration::validate() const
     if (supportsCancellation && cancelPath.isNotEmpty() && ! cancelPath.contains ("{id}"))
         return "cancelPath must contain {id}";
 
-    for (auto [n, f, opt] : { std::tuple<const char*, juce::String, bool> { "jobIdField", jobIdField, ! supportsPolling },
+    for (const auto& [n, f, opt] : std::initializer_list<Check> { { "jobIdField", jobIdField, ! supportsPolling },
                               { "statusField", statusField, ! supportsPolling }, { "progressField", progressField, true },
                               { "audioUrlField", audioUrlField, downloadPath.isNotEmpty() }, { "errorField", errorField, true },
                               { "errorCodeField", errorCodeField, true } })

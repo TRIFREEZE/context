@@ -58,6 +58,7 @@ LicenseManager::LicenseManager (Config c) : cfg (std::move (c))
 LicenseManager::~LicenseManager()
 {
     worker.clearPending();
+    shutdownToken->cancel();   // never hold up DAW shutdown waiting for the licensing server
 }
 
 juce::String LicenseManager::toString (Status s)
@@ -259,9 +260,8 @@ void LicenseManager::activate (const juce::String& rawKey)
         o->setProperty ("plugin_version", cfg.pluginVersion);
         req.jsonBody = json::toCompactString (juce::var (o));
 
-        CancellationToken tokenCancel;
         logging::info ("license", "Activating " + redaction::maskLicenseKey (key) + " against " + redaction::safeUrlForDisplay (base));
-        const auto r = HttpClient::send (req, tokenCancel);
+        const auto r = HttpClient::send (req, *shutdownToken);
 
         if (! r.connected)
         {
@@ -325,8 +325,7 @@ void LicenseManager::refreshIfDue (bool force)
         o->setProperty ("device_id", cfg.deviceId);
         o->setProperty ("plugin_version", cfg.pluginVersion);
         req.jsonBody = json::toCompactString (juce::var (o));
-        CancellationToken never;
-        const auto r = HttpClient::send (req, never);
+        const auto r = HttpClient::send (req, *shutdownToken);
 
         if (! r.connected || r.statusCode >= 500 || r.statusCode == 429)
         {
@@ -388,8 +387,7 @@ void LicenseManager::deactivate()
         o->setProperty ("license_key", key);
         o->setProperty ("device_id", cfg.deviceId);
         req.jsonBody = json::toCompactString (juce::var (o));
-        CancellationToken never;
-        const auto r = HttpClient::send (req, never);
+        const auto r = HttpClient::send (req, *shutdownToken);
         if (! r.isSuccess())
             setState (Status::Unlicensed, "Deactivated here, but the server couldn't be reached to free the device slot. "
                                           "It can be reset by the license administrator.");
@@ -424,8 +422,7 @@ void LicenseManager::checkForUpdate()
         req.url = base + "/version";
         req.timeoutMs = 8000;
         req.maxResponseBytes = 16 * 1024;
-        CancellationToken never;
-        const auto r = HttpClient::send (req, never);
+        const auto r = HttpClient::send (req, *shutdownToken);
         UpdateInfo info;
         info.checked = true;
         if (! r.isSuccess())
