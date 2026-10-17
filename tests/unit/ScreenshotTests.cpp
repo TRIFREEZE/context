@@ -173,6 +173,20 @@ public:
         snap (*ed, "loaded");
         if (auto* e = dynamic_cast<ContextAudioProcessorEditor*> (ed.get()))
         {
+            auto& bar = e->getWorkspace().getLanes().verdictBar();
+            snap (*ed, "verdict-ask");
+            bar.passButton().triggerClick();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+            if (auto* b = bar.reasonButton ("busy")) b->setToggleState (true, juce::dontSendNotification);
+            if (auto* b = bar.reasonButton ("timing")) b->setToggleState (true, juce::dontSendNotification);
+            snap (*ed, "verdict-reasons");
+            bar.showPassed ({ "Too busy", "Timing" }, true);
+            e->getWorkspace().getLanes().resized();
+            snap (*ed, "verdict-passed");
+            bar.dismissQuestion();
+        }
+        if (auto* e = dynamic_cast<ContextAudioProcessorEditor*> (ed.get()))
+        {
             ui::showTempoSheet (e->getWorkspace().getLanes(), p);
             snap (*ed, "sheet-tempo");
             e->closeSheet();

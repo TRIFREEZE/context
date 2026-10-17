@@ -32,6 +32,7 @@ private:
     juce::Component* refreshComponentForRow (int row, bool selected, juce::Component* existing) override;
 
     void removeEntry (const GenerationResult&);
+    void saveRatings();
 
     class Row;
     ContextAudioProcessor& processor;
@@ -41,6 +42,8 @@ private:
     juce::ListBox list;
     juce::Label emptyLabel, infoLabel;
     juce::Rectangle<int> columnHeader;
+    juce::TextButton exportRatings { "Export ratings" };
+    std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (HistoryTab)
 };

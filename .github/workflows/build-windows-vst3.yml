@@ -99,6 +99,20 @@ jobs:
         shell: pwsh
         run: ctest --test-dir ${{ env.BUILD_DIR }} -C Release --output-on-failure
 
+      # Turns the failing checks into annotations: they show on the run's summary page and can be
+      # read through the GitHub API, without opening the full log.
+      - name: Report failed checks
+        if: failure()
+        shell: pwsh
+        run: |
+          $log = Join-Path "${{ env.BUILD_DIR }}" "Testing/Temporary/LastTest.log"
+          if (Test-Path $log) {
+            Select-String -Path $log -Pattern '\] !!! |^\s*FAIL ' | Select-Object -First 10 | ForEach-Object {
+              $t = $_.Line.Trim() -replace '%', '%25' -replace "`r", '' -replace "`n", ' '
+              Write-Output "::error title=Failed check::$t"
+            }
+          }
+
       - name: Locate VST3 bundle
         id: locate
         shell: pwsh

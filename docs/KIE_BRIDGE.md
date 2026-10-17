@@ -86,6 +86,10 @@ captured 8 bars to the bridge, and the bridge:
   documented `audio_url` input with the clip's link. If separation still fails, or the stem is
   silent, the bridge delivers the full result (the credits are already spent) and says so.
 * **Errors name the step**, e.g. "Kie.ai add-vocals: ..." or "Kie.ai stem separation: ...".
+* **Your passes** (bridge 1.1.2): Context sends what you passed on as `negativeTags`; the bridge puts
+  them in front of `negative_tags` (from `config.json`) for add-vocals, cover and extend, within
+  Kie.ai's 200 characters. Plain Sounds requests have no documented negative-tags field, so there
+  the steer only works through the prompt words.
 * **What isn't known yet:** Kie.ai's docs don't say how long add-vocals results are or exactly how
   the stem files are named. The bridge accepts every documented result shape and falls back to the
   full result when the requested stem isn't there; its window says which stem it kept.

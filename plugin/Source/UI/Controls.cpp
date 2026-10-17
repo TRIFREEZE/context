@@ -289,6 +289,12 @@ void IconButton::drawIcon (juce::Graphics& g, Icon icon, juce::Rectangle<float> 
             p.startNewSubPath (x + w * 0.1f, r.getCentreY()); p.lineTo (x + w * 0.9f, r.getCentreY());
             g.strokePath (p, stroke);
             break;
+        case Icon::Check:
+            p.startNewSubPath (x + w * 0.12f, y + h * 0.55f);
+            p.lineTo (x + w * 0.4f, y + h * 0.82f);
+            p.lineTo (x + w * 0.9f, y + h * 0.2f);
+            g.strokePath (p, stroke);
+            break;
         case Icon::Close:
             p.startNewSubPath (x + w * 0.15f, y + h * 0.15f); p.lineTo (x + w * 0.85f, y + h * 0.85f);
             p.startNewSubPath (x + w * 0.85f, y + h * 0.15f); p.lineTo (x + w * 0.15f, y + h * 0.85f);

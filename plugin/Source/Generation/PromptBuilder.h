@@ -26,6 +26,9 @@ public:
         /** Key the user picked (root 0-11, minor). Used even with track context off, and over
             the detected key; a key typed in the prompt still wins. */
         std::optional<std::pair<int, bool>> userKey;
+        /** From your passes on this prompt (taste::forPrompt): phrases added when expansion is
+            on, and things to avoid, sent as negative tags either way. */
+        juce::StringArray steerHints, avoid;
     };
 
     struct Output
@@ -35,6 +38,7 @@ public:
         std::optional<double> bpm;                // structured fields for providers
         juce::String key, mode;                   // "F#", "minor"
         std::optional<double> keyConfidence;
+        juce::String negativeTags;                // from your passes, "" when none
     };
 
     static Output build (const Inputs&);

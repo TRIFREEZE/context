@@ -125,6 +125,7 @@ struct GenerationRequest
     juce::String variationOfRemoteId;       // provider job id of the source, if known
     std::optional<AudioConditioningPayload> audioContext;
     juce::String contextMode;               // contextmode::*, only meaningful with audioContext
+    juce::String negativeTags;              // what to avoid, from your passes ("busy, cluttered"); optional
     juce::NamedValueSet providerParameters;
     std::optional<TrackAnalysis> contextAnalysis;
 

@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "Generation/Taste.h"
 #include "Audio/Resampler.h"
 #include "PluginEditor.h"
 #include "BuildInfo.h"
@@ -464,6 +465,10 @@ PromptBuilder::Output ContextAudioProcessor::previewPrompt (const UiState& s) co
     if (sessionController != nullptr)
         if (const auto k = sessionController->sessionKey(); k.chosen)
             in.userKey = std::make_pair (k.root, k.minor);
+    // Your Keep / Pass verdicts on this prompt steer it (see Generation/Taste.h).
+    const auto steer = taste::forPrompt (shared->history().recent (300), s.prompt, s.type);
+    in.steerHints = steer.hints;
+    in.avoid = steer.avoid;
     return PromptBuilder::build (in);
 }
 
@@ -478,6 +483,7 @@ GenerationRequest ContextAudioProcessor::makeRequest (const UiState& s) const
     r.key = built.key;
     r.mode = built.mode;
     r.keyConfidence = built.keyConfidence;
+    r.negativeTags = built.negativeTags;
     r.seed = (juce::int64) juce::Random::getSystemRandom().nextInt (0x7fffffff);
     if (s.useTrackContext)
         r.contextAnalysis = analysisController->getLatest();
@@ -521,6 +527,24 @@ GenerationRequest ContextAudioProcessor::requestFromResult (const GenerationResu
     r.key = src.key;
     r.mode = src.mode;
     r.seed = (juce::int64) juce::Random::getSystemRandom().nextInt (0x7fffffff);
+    // New take / fill: what you passed on so far steers this one too.
+    {
+        const auto steer = taste::forPrompt (shared->history().recent (300), src.prompt, src.type);
+        r.negativeTags = steer.avoid.joinIntoString (", ").substring (0, 200);
+        if (r.expandedPrompt != r.userPrompt)            // the source was expanded: steer the text too
+        {
+            juce::StringArray add;
+            for (const auto& h : steer.hints)
+                if (! r.expandedPrompt.containsIgnoreCase (h))
+                    add.add (h);
+            if (! add.isEmpty())
+            {
+                auto text = add.joinIntoString ("; ");
+                text = text.substring (0, 1).toUpperCase() + text.substring (1) + ".";
+                r.expandedPrompt = (r.expandedPrompt.trimEnd() + " " + text).substring (0, 4000);
+            }
+        }
+    }
     if (sessionController != nullptr && src.type != GenerationType::OneShot && src.type != GenerationType::FX)
     {
         const double seconds = musical::secondsForBars (sessionController->getState().lengthBars, sessionController->sessionTempo());

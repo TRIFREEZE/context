@@ -123,6 +123,9 @@ PromptBuilder::Output PromptBuilder::build (const Inputs& in)
         out.keyConfidence = a->keyConfidence;
     }
 
+    // Things to avoid, from your passes: structured, so they go out even with Enhance off.
+    out.negativeTags = in.avoid.joinIntoString (", ").substring (0, 200);
+
     if (! in.expansionEnabled || prompt.isEmpty())
     {
         out.expandedPrompt = prompt;
@@ -190,6 +193,13 @@ PromptBuilder::Output PromptBuilder::build (const Inputs& in)
 
     if (in.type == GenerationType::Vocal && containsWord (lower, { "chop", "chops", "stutter" }) && out.bpm)
         { parts.add ("Short rhythmic phrasing."); out.hints.add ("rhythmic phrasing"); }
+
+    // ---- Your verdicts on this prompt so far ----
+    if (! in.steerHints.isEmpty())
+    {
+        parts.add (sentence (capitaliseFirst (in.steerHints.joinIntoString ("; "))));
+        out.hints.add ("steered by your passes");
+    }
 
     if (! a || ! a->valid)
     {

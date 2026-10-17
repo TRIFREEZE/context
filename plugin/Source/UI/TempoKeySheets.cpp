@@ -135,6 +135,12 @@ void ValueChip::setText (const juce::String& t, juce::Font f, juce::Colour c)
 {
     if (t == text && c == colour && f == textFont)
         return;
+    if (text.isNotEmpty() && t != text && isShowing())
+    {
+        change.onChange = [this] { repaint(); };
+        change.snap (0.0f);
+        change.set (1.0f, motion::duration::panel * 1.4f, motion::Ease::OutCubic);
+    }
     text = t;
     textFont = f;
     colour = c;
@@ -168,9 +174,10 @@ void ValueChip::paint (juce::Graphics& g)
         g.setColour (colours::border.withAlpha (hv));
         g.drawRoundedRectangle (r.reduced (0.5f), radius::control, 1.0f);
     }
-    g.setColour (colour);
+    const float ch = change.get();
+    g.setColour (colour.withMultipliedAlpha (0.35f + 0.65f * ch));
     g.setFont (textFont);
-    auto textArea = r.withTrimmedLeft (5.0f).withTrimmedRight (16.0f);
+    auto textArea = r.withTrimmedLeft (5.0f).withTrimmedRight (16.0f).translated (0.0f, (1.0f - ch) * 5.0f);
     if (unit.isNotEmpty())
     {
         const float tw = (float) juce::GlyphArrangement::getStringWidthInt (textFont, text);

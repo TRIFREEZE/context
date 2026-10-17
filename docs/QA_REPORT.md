@@ -208,3 +208,30 @@ Run here (Linux): `ContextTests --unit` 5747 checks, 0 failed; `ctest` 5/5; `run
 passes. Not verified: real Kie.ai results (the fake Kie server reproduces the reported shapes),
 FL Studio on Windows by hand, real menu windows (headless machine: menus were rendered through the
 same LookAndFeel calls).
+
+## V2.2: Keep / Pass, more motion (October 2026)
+
+* `taste::forPrompt` (Generation/Taste): reasons from the last 40 verdicts on the same prompt + type,
+  most-mentioned first; Too busy vs Too empty resolved by frequency. Feeds PromptBuilder
+  (`steerHints`, `avoid` -> `negativeTags`) and New take / fill (`requestFromResult`).
+* `GenerationRequest.negativeTags` -> protocol `negativeTags` -> Kie bridge 1.1.2 `merge_negative`.
+* `HistoryStore::setRating` stores `rating` / `passReasons` in the entry metadata; keep = favorite.
+* `SessionController::passTake`: any take (base too: the newest other take becomes the base).
+* UI: `KeepPassBar` (ask / reasons / confirmation; auto-leaves, not while hovered), clip menu Keep /
+  Pass, History verdict notes + Export ratings; WaveformLane `revealNext` wipe; prompt glow while
+  generating; ValueChip change animation.
+* Tests: `TasteTests` (steer aggregation, prompt + negative tags with Enhance on/off, request
+  round trip and bridge body, export, and the bar driven from the editor: keep, pass with a reason,
+  take removed, prompt steered); bridge e2e (negativeTags merged into add-vocals' negative_tags);
+  screenshots of the three bar states.
+* The V1.04 Windows CI failure (found from the log the user pasted): "Undo / redo walk back through
+  fills, fit changes..." - `undo fit change`. Undo steps were committed only after ~8 quiet timer
+  ticks; on the slow CI machine two Fit clicks 500 ms apart merged into one step (a real bug on a
+  busy computer too). Fixed: discrete actions (fit, length, grid, tempo, key, takes, edits, mute /
+  solo, effect add / remove / reorder / bypass, the start of a knob drag) commit what is pending
+  before them and themselves right after. New test "Quick clicks are separate undo steps even when
+  the timer never gets a turn" fails without the fix (verified) and passes with it.
+  CI now also turns failing checks into annotations; `ContextTests --unit --order=reverse|<seed>`
+  checks order independence.
+
+Run here (Linux): `--unit` 5777 checks, 0 failed (also reversed); `ctest` 5/5; Kie bridge e2e passes.

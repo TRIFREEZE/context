@@ -59,7 +59,7 @@ try:  # optional: MP3 -> WAV fallback
 except Exception:  # pragma: no cover - depends on the user's machine
     miniaudio = None
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 PROTOCOL = "context-bridge-v1"
 TYPES = ["one_shot", "loop", "vocal", "instrument", "percussion", "texture", "fx", "melody"]
 DEFAULT_API_BASE = "https://api.kie.ai"
@@ -863,6 +863,24 @@ def parse_audio_context(req: dict, work_dir: str, job_id: str):
     return ContextAudio(path, info[0], mode, bars)
 
 
+def merge_negative(cfg: Config, req: dict) -> str:
+    """negative_tags for the models that take them: the config's, plus what Context sends from
+    your passes (request.negativeTags), without duplicates, within Kie.ai's 200 characters."""
+    tags = []
+    for source in (str(req.get("negativeTags") or ""), str(cfg.get("negative_tags", "low quality, muffled, clipping"))):
+        for t in source.split(","):
+            t = t.strip()
+            if t and t.lower() not in [x.lower() for x in tags]:
+                tags.append(t)
+    out = ""
+    for t in tags:
+        candidate = (out + ", " + t) if out else t
+        if len(candidate) > 200:
+            break
+        out = candidate
+    return out
+
+
 def context_plan(req: dict, cfg: Config, ctx: ContextAudio):
     """The Kie.ai steps for a request with track context: (first_model, first_input, stem, label).
     `stem` is the stem to separate out afterwards (None = keep the whole result)."""
@@ -876,7 +894,7 @@ def context_plan(req: dict, cfg: Config, ctx: ContextAudio):
         model = "V6"
     title = shorten(user_prompt, 80) or "Context"
     style = shorten(prompt, 1000)
-    negative = shorten(str(cfg.get("negative_tags", "low quality, muffled, clipping")), 200)
+    negative = merge_negative(cfg, req)
     audio_weight = cfg.get("context_audio_weight", 0.8)
     try:
         audio_weight = round(min(1.0, max(0.0, float(audio_weight))), 2)

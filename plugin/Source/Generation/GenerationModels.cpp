@@ -250,6 +250,7 @@ juce::var GenerationRequest::toVar() const
     if (variationOfRemoteId.isNotEmpty())     o->setProperty ("variationOfRemoteId", variationOfRemoteId);
     if (contextAnalysis && contextAnalysis->valid) o->setProperty ("context", contextAnalysis->toVar());
     if (contextMode.isNotEmpty()) o->setProperty ("contextMode", contextMode);
+    if (negativeTags.isNotEmpty()) o->setProperty ("negativeTags", negativeTags);
     return juce::var (o);
 }
 
@@ -272,6 +273,7 @@ GenerationRequest GenerationRequest::fromVar (const juce::var& v)
     const auto cm = json::getString (v, "contextMode").value_or ("");
     if (cm == contextmode::layer || cm == contextmode::cover || cm == contextmode::extend)
         r.contextMode = cm;
+    r.negativeTags = json::getString (v, "negativeTags").value_or ("").substring (0, 200);
     return r;
 }
 

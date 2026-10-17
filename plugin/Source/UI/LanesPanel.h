@@ -5,6 +5,7 @@
 #include "ArrangementOverlay.h"
 #include "SelectionBar.h"
 #include "TempoKeySheets.h"
+#include "KeepPassBar.h"
 
 namespace context { class ContextAudioProcessor; }
 
@@ -24,6 +25,7 @@ public:
     /** Editing keys (S, Delete, F, Ctrl+C/X/V/D/A, G, Esc). True if used. */
     bool handleKey (const juce::KeyPress&);
     ArrangementOverlay& arrangement() { return overlay; }
+    KeepPassBar& verdictBar() { return verdict; }
     /** The right-click menu of the sound lane (public for the screenshot tests). */
     void showEditMenu (juce::Point<int> inOverlay);
 
@@ -69,6 +71,14 @@ private:
     juce::Slider ctxGain, outGain;
     IconButton ctxMenu { IconButton::Icon::More, "Context options" }, outMenu { IconButton::Icon::More, "Sample options" };
     ValueChip bpmChip, keyChip;           // click to set the tempo / key
+    KeepPassBar verdict;                  // Keep / Pass on a new take
+    juce::String lastBaseTake;
+    WaveformPeaks::Ptr lastContextPeaks;
+    std::set<juce::String> verdictAsked;  // generations already asked about (this window)
+    void updateVerdict();
+    void layoutVerdict();
+    void keepGeneration (const juce::String& generationId);
+    void passGeneration (const juce::String& generationId, const juce::String& takeId, const juce::StringArray& reasons);
 
     SegmentedControl fitMode;
     juce::ComboBox algorithm;

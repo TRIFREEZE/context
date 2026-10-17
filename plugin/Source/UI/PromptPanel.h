@@ -23,6 +23,7 @@ public:
     std::function<void (const juce::String&)> onStatus;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
 
 private:

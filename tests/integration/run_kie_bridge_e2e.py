@@ -347,6 +347,14 @@ def main():
             check(s.get("status") == "complete", f"if Kie.ai can't separate at all, the full result is still delivered ({s})")
             check("couldn't separate the vocal" in open(bproc.log_path).read(), "the bridge window says the result includes the track")
 
+        # What the producer passed on reaches Kie.ai as negative tags (merged with the config's).
+        before = len(upstream_log(api))
+        generate(bridge, "airy female vocal", "vocal", audioContext=actx, contextMode="layer", negativeTags="busy, cluttered")
+        sent = [x for x in upstream_log(api)[before:] if x["model"] == "ai-music-api/add-vocals"]
+        neg = sent[0]["input"].get("negative_tags", "") if sent else ""
+        check(neg.startswith("busy, cluttered") and "low quality" in neg and len(neg) <= 200,
+              f"request negativeTags are merged into negative_tags ({neg})")
+
         # Errors name the step that failed.
         st, s = generate(bridge, "vocal #upfail", "vocal", audioContext=actx, contextMode="layer")
         check(s.get("status") == "failed" and s.get("error", "").startswith("Kie.ai add-vocals:"),

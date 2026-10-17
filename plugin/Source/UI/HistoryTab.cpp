@@ -1,4 +1,5 @@
 #include "HistoryTab.h"
+#include "Generation/Taste.h"
 #include "Theme.h"
 #include "Sheet.h"
 #include "PluginProcessor.h"
@@ -78,10 +79,22 @@ public:
         g.drawText (fitText (item.prompt.isNotEmpty() ? item.prompt : item.localFile.getFileName(), ui::font (type::body + 0.5f, Weight::Medium),
                              (float) nameArea.getWidth()),
                     nameArea.removeFromTop (getHeight() / 2 + 4).withTrimmedTop (6), juce::Justification::bottomLeft, false);
-        juce::String note;
-        if (! exists) note = "File missing";
-        else if (item.pinned) note = "Used in a project, kept";
-        else if (item.metadata.contains ("contextMode")) note = "Made on your track";
+        juce::StringArray notes;
+        if (! exists) notes.add ("File missing");
+        const int rating = taste::ratingOf (item);
+        if (rating > 0) notes.add ("Kept");
+        if (rating < 0)
+        {
+            juce::StringArray why;
+            if (auto* arr = item.metadata.getWithDefault ("passReasons", {}).getArray())
+                for (auto& x : *arr)
+                    if (auto* reason = taste::findReason (x.toString()))
+                        why.add (juce::String (reason->label).toLowerCase());
+            notes.add ("Passed" + (why.isEmpty() ? juce::String() : ": " + why.joinIntoString (", ")));
+        }
+        if (exists && item.pinned) notes.add ("Used in a project");
+        else if (exists && item.metadata.contains ("contextMode")) notes.add ("Made on your track");
+        const auto note = notes.joinIntoString (juce::String::fromUTF8 ("  \xc2\xb7  "));
         if (note.isNotEmpty())
         {
             g.setColour (exists ? colours::faint : colours::warn);
@@ -142,6 +155,11 @@ HistoryTab::HistoryTab (ContextAudioProcessor& p) : processor (p)
     filterSwitch.setItems ({ "Recent", "Favorites", "Everything" }, { "The last 25 sounds", "Starred sounds", "Every sound in your library" });
     filterSwitch.onChange = [this] (int i) { filter = i == 1 ? Filter::Favorites : i == 2 ? Filter::All : Filter::Recent; refresh(); };
     addAndMakeVisible (filterSwitch);
+    setStyle (exportRatings, ButtonStyle::Ghost);
+    exportRatings.setTooltip ("Save your Keep / Pass verdicts (prompt, settings, verdict, reasons, file path) as JSON: "
+                              "a record of your taste, ready if you ever train or tune a model of your own. No audio is copied.");
+    exportRatings.onClick = [this] { saveRatings(); };
+    addAndMakeVisible (exportRatings);
 
     list.setModel (this);
     list.setRowHeight (54);
@@ -197,6 +215,32 @@ juce::Component* HistoryTab::refreshComponentForRow (int row, bool, juce::Compon
     return r;
 }
 
+void HistoryTab::saveRatings()
+{
+    const auto all = processor.services().history().all();
+    int n = 0;
+    for (auto& r : all) n += taste::ratingOf (r) != 0 ? 1 : 0;
+    if (n == 0)
+    {
+        Sheet::show (*this, "No verdicts yet", "Keep or Pass a take (the bar over a new take, or right-click a clip) and it is recorded here.", {});
+        return;
+    }
+    chooser = std::make_unique<juce::FileChooser> ("Save your Keep / Pass verdicts",
+                                                   juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Context ratings.json"),
+                                                   "*.json");
+    juce::Component::SafePointer<HistoryTab> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [safe, all] (const juce::FileChooser& fc)
+    {
+        const auto f = fc.getResult();
+        if (safe == nullptr || f == juce::File())
+            return;
+        const bool ok = f.replaceWithText (taste::exportRatings (all));
+        Sheet::show (*safe, ok ? "Verdicts saved" : "Couldn't save",
+                     ok ? f.getFullPathName() : "Context couldn't write " + f.getFullPathName() + ". Pick another folder.", {});
+    });
+}
+
 void HistoryTab::removeEntry (const GenerationResult& item)
 {
     const auto folder = processor.services().generatedFolder();
@@ -241,6 +285,7 @@ void HistoryTab::resized()
     auto r = getLocalBounds().reduced (space::l, space::m);
     auto top = r.removeFromTop (height::control + 2);
     filterSwitch.setBounds (top.removeFromLeft (260));
+    exportRatings.setBounds (top.removeFromRight (juce::GlyphArrangement::getStringWidthInt (font (type::body, Weight::Medium), exportRatings.getButtonText()) + 28));
     r.removeFromTop (space::m);
     infoLabel.setBounds (r.removeFromBottom (20));
     columnHeader = r.removeFromTop (22);

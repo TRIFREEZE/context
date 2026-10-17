@@ -196,6 +196,7 @@ bool SessionController::hostTempoDiffers() const
 
 void SessionController::setTempo (double bpm)
 {
+    const DiscreteStep step (*this);
     if (! musical::isValidBpm (bpm))
         return;
     const auto s = getState();
@@ -232,6 +233,7 @@ void SessionController::setTempo (double bpm)
 
 void SessionController::clearTempo()
 {
+    const DiscreteStep step (*this);
     if (! getState().tempoOverride)
         return;
     mutate ([] (SessionState& st) { st.tempoOverride.reset(); });
@@ -277,6 +279,7 @@ SessionController::Key SessionController::sessionKey() const
 
 void SessionController::setKey (int root, bool minor)
 {
+    const DiscreteStep step (*this);
     root = root >= 0 && root < 12 ? root : -1;
     mutate ([root, minor] (SessionState& st) { st.keyRoot = root; st.keyMinor = root >= 0 && minor; });
     sendChangeMessage();
@@ -910,6 +913,8 @@ std::vector<SessionController::TakeInfo> SessionController::takes() const
         i.number = t.id.substring (1).getIntValue();
         i.name = t.name.isNotEmpty() ? t.name : juce::String ("Take ") + juce::String (i.number);
         i.isBase = t.id == s.baseTake;
+        if (t.kind == edit::Take::Kind::Generated)
+            i.generationId = t.ref;
         for (const auto& c : view.clips) i.used = i.used || c.take == t.id;
         if (auto it = takeData.find (t.id); it != takeData.end())
         {
@@ -923,14 +928,40 @@ std::vector<SessionController::TakeInfo> SessionController::takes() const
     return out;
 }
 
+void SessionController::passTake (const juce::String& takeId)
+{
+    const DiscreteStep step (*this);
+    const auto s = getState();
+    if (s.findTake (takeId) == nullptr)
+        return;
+    if (takeId != s.baseTake)
+    {
+        removeTake (takeId);
+        return;
+    }
+    juce::String next;
+    for (auto it = s.takes.rbegin(); it != s.takes.rend() && next.isEmpty(); ++it)
+        if (it->id != takeId)
+            next = it->id;
+    if (next.isEmpty())
+    {
+        clearOutput();
+        return;
+    }
+    setBaseTake (next, false);
+    removeTake (takeId);
+}
+
 void SessionController::useTakeEverywhere (const juce::String& takeId)
 {
+    const DiscreteStep step (*this);
     if (getState().findTake (takeId) != nullptr)
         setBaseTake (takeId, true);
 }
 
 void SessionController::removeTake (const juce::String& takeId)
 {
+    const DiscreteStep step (*this);
     const auto s = getState();
     if (takeId == s.baseTake || s.findTake (takeId) == nullptr)
         return;
@@ -959,6 +990,7 @@ double SessionController::totalBeats() const
 template <typename Fn>
 void SessionController::editWith (Fn&& op)
 {
+    const DiscreteStep step (*this);
     const auto s = getState();
     if (s.baseTake.isEmpty() && ! s.arrangement.isEdited())
         return;
@@ -986,6 +1018,7 @@ SessionController::EditView SessionController::editView() const
 
 void SessionController::setGrid (double beats)
 {
+    const DiscreteStep step (*this);
     beats = juce::jlimit (0.0, 16.0, beats);
     mutate ([beats] (SessionState& s) { s.gridBeats = beats; });
 }
@@ -1064,6 +1097,7 @@ void SessionController::editDuplicate (double from, double to)
 
 void SessionController::editReset()
 {
+    const DiscreteStep step (*this);
     if (! getState().arrangement.isEdited())
         return;
     mutate ([] (SessionState& s) { s.arrangement = {}; });
@@ -1142,7 +1176,14 @@ void SessionController::redo()
     applySnapshot (target);
 }
 
-void SessionController::beginGesture() { ++gestureDepth; }
+void SessionController::commitPending()
+{
+    if (gestureDepth == 0 && ! applyingHistory)
+        commitHistory();
+}
+
+// A drag starts as its own step: whatever was still settling is committed first.
+void SessionController::beginGesture() { if (gestureDepth == 0) commitPending(); ++gestureDepth; }
 
 void SessionController::endGesture()
 {
@@ -1226,6 +1267,7 @@ SessionController::LaneInfo SessionController::outputLane() const
 
 void SessionController::setLengthBars (int bars)
 {
+    const DiscreteStep step (*this);
     if (! musical::isValidLengthBars (bars) || bars == getState().lengthBars)
         return;
     mutate ([bars] (SessionState& s) { s.lengthBars = bars; });
@@ -1234,12 +1276,14 @@ void SessionController::setLengthBars (int bars)
 
 void SessionController::setFitMode (FitMode m)
 {
+    const DiscreteStep step (*this);
     mutate ([m] (SessionState& s) { s.fit.mode = m; });
     requestRender();
 }
 
 void SessionController::setAlgorithm (stretch::Algorithm a)
 {
+    const DiscreteStep step (*this);
     mutate ([a] (SessionState& s) { s.fit.algorithm = a; });
     requestRender();
 }
@@ -1531,12 +1575,14 @@ void SessionController::setLaneGainDb (int lane, float db)
 
 void SessionController::setLaneMute (int lane, bool m)
 {
+    const DiscreteStep step (*this);
     mutate ([lane, m] (SessionState& s) { (lane == PreviewEngine::contextLane ? s.contextMute : s.outputMute) = m; });
     deps.engine->setLaneMute (lane, m);
 }
 
 void SessionController::setLaneSolo (int lane, bool on)
 {
+    const DiscreteStep step (*this);
     mutate ([lane, on] (SessionState& s) { (lane == PreviewEngine::contextLane ? s.contextSolo : s.outputSolo) = on; });
     deps.engine->setLaneSolo (lane, on);
 }
@@ -1688,6 +1734,17 @@ SessionController::ExportResult SessionController::exportProcessed()
 void SessionController::processingChanged()
 {
     scheduleExport();
+    // Adding, removing, reordering or bypassing an effect is a click: its own undo step now
+    // (knob moves keep settling, or are grouped by their gesture).
+    juce::String structure;
+    for (int i = 0; i < deps.chain->size(); ++i)
+        structure << deps.chain->instanceId (i) << (deps.chain->isBypassed (i) ? "b" : "a") << ";";
+    if (structure != lastChainStructure)
+    {
+        lastChainStructure = structure;
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+            commitPending();
+    }
 }
 
 void SessionController::scheduleExport()

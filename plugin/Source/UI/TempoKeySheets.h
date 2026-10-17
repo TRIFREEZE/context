@@ -28,6 +28,7 @@ private:
     juce::Font textFont { juce::FontOptions {} };
     int unitWidth() const;
     juce::Colour colour;
+    motion::Value change { 1.0f };      // 0 -> 1 when the value changes: it settles into place
 };
 
 /** "Tempo" sheet: type a tempo, or pick half-time / double-time / the DAW's tempo. */

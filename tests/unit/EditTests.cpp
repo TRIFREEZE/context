@@ -285,6 +285,37 @@ public:
         expectEquals (chain.size(), 1);
         expectEquals (chain.effect (0)->parameter ("b3gain")->get(), 10.0f, "redo restores the drag result");
 
+        beginTest ("Quick clicks are separate undo steps even when the timer never gets a turn (slow CI)");
+        {
+            // No pumping at all: the quiet-tick timer can't commit anything in between.
+            const auto before = session.getState().fit.mode;
+            session.setFitMode (FitMode::Stretch);
+            session.setFitMode (FitMode::Repitch);
+            session.setFitMode (FitMode::Loop);
+            session.undo();
+            expect (session.getState().fit.mode == FitMode::Repitch, "first undo: one click back");
+            session.undo();
+            expect (session.getState().fit.mode == FitMode::Stretch, "second undo: another click back");
+            session.undo();
+            expect (session.getState().fit.mode == before, "third undo: where we started");
+            session.redo();
+            expect (session.getState().fit.mode == FitMode::Stretch);
+
+            auto& ch = p.effects();
+            const int fxBefore = ch.size();
+            ch.add ("eq");                                        // no pump before the drag
+            auto* g = ch.effect (ch.size() - 1)->parameter ("b3gain");
+            const float start = g->get();
+            session.beginGesture();
+            g->set (start + 4.0f);
+            session.endGesture();
+            session.undo();
+            expectEquals (ch.size(), fxBefore + 1, "undoing the drag keeps the effect that was just added");
+            expectEquals (ch.effect (ch.size() - 1)->parameter ("b3gain")->get(), start);
+            session.undo();
+            expectEquals (ch.size(), fxBefore, "the add is its own step");
+        }
+
         beginTest ("Edits and takes persist in the project and reload");
         session.editSplit (4.0);
         pump (400);

@@ -19,6 +19,9 @@ public:
 
     void add (const GenerationResult&);
     void setFavorite (const juce::String& id, bool);
+    /** Your verdict on a generation: +1 kept, -1 passed (with what was off), 0 none. Stored in
+        the entry's metadata ("rating", "passReasons"); keeping also makes it a favorite. */
+    void setRating (const juce::String& id, int rating, const juce::StringArray& reasons = {});
     void setPinned (const juce::String& id);          // file was dragged/exported: protect from cleanup
     void touch (const juce::String& id);              // update LRU time
     std::optional<GenerationResult> remove (const juce::String& id);   // returns the removed entry

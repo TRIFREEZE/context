@@ -212,6 +212,24 @@ Then choose what the generator does with them:
 These use several Kie.ai steps each, so they cost more credits and take longer than a plain
 sound (see `docs/KIE_BRIDGE.md`).
 
+### Keep or Pass a take
+
+When a new take lands, a small card floats over the lower lane: **Keep** or **Pass**.
+
+* **Keep**: the take is marked kept and saved to Favorites (History > Favorites).
+* **Pass**: pick what was off (**Timing**, **Off key**, **Too busy**, **Too empty**, **Wrong sound**,
+  **Quality**; any number, or **Skip**), then **Pass**. The take leaves the lane (the previous take
+  plays again) and the card offers **New take**. From now on, takes of the same prompt and type are
+  steered away from what you named: with *Enhance* on, words like "sparse, minimal" are added to the
+  prompt; either way, things to avoid ("busy, cluttered") go to the bridge as negative tags.
+* Right-click a clip for **Keep take N** / **Pass on take N...** at any time.
+* History shows *Kept* / *Passed: too busy, timing* under each sound. **Export ratings** (top
+  right) saves every verdict as JSON.
+
+What this is and isn't: Context can't fine-tune or train Kie.ai's (Suno's) models; nothing about
+the generator changes. Your verdicts steer *your* next requests, and the export keeps them in a form
+you could use to train or tune a model later.
+
 ## T2. Edit the sound (cut, move, stretch, fill gaps)
 
 On the lower lane:

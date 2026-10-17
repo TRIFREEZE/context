@@ -106,6 +106,28 @@ void HistoryStore::setFavorite (const juce::String& id, bool fav)
     changed();
 }
 
+void HistoryStore::setRating (const juce::String& id, int rating, const juce::StringArray& reasons)
+{
+    rating = juce::jlimit (-1, 1, rating);
+    {
+        const juce::ScopedLock sl (lock);
+        for (auto& e : entries)
+            if (e.generationId == id)
+            {
+                e.metadata.set ("rating", rating);
+                juce::Array<juce::var> r;
+                for (auto& x : reasons) r.add (x.substring (0, 32));
+                if (rating < 0 && ! r.isEmpty())
+                    e.metadata.set ("passReasons", r);
+                else
+                    e.metadata.remove ("passReasons");
+                if (rating > 0)
+                    e.favorite = true;
+            }
+    }
+    changed();
+}
+
 void HistoryStore::setPinned (const juce::String& id)
 {
     bool did = false;

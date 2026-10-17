@@ -1,5 +1,5 @@
 // Test runner for Context.
-//   ContextTests --unit                         run all unit tests
+//   ContextTests --unit [--order=reverse|<seed>] run all unit tests (optionally reordered)
 //   ContextTests --category=Prompt              run one category
 //   ContextTests --integration=<bridgeUrl>      run bridge integration tests against a live bridge
 //   ContextTests --bridge-e2e=<bridgeUrl>       generate through an external bridge (Kie.ai bridge test)
@@ -71,6 +71,21 @@ int main (int argc, char* argv[])
             if (t->getCategory() != "Integration" && t->getCategory() != "LicenseIntegration" && t->getCategory() != "ProductE2E"
                 && t->getCategory() != "BridgeE2E" && t->getCategory() != "Screens")
                 tests.add (t);
+        // The registration order differs between compilers (static initialisation order), so
+        // the suite must pass in any order: --order=reverse / --order=<shuffle seed> checks it.
+        if (args.containsOption ("--order"))
+        {
+            const auto order = args.getValueForOption ("--order");
+            if (order == "reverse")
+                std::reverse (tests.begin(), tests.end());
+            else
+            {
+                juce::Random rng (order.getLargeIntValue());
+                for (int i = tests.size(); --i > 0;)
+                    tests.swap (i, rng.nextInt (i + 1));
+            }
+            std::printf ("Test order: %s\n", order.toRawUTF8());
+        }
         runner.runTests (tests);
     }
 

@@ -62,6 +62,9 @@ public:
     /** Sound lane while a new take is being generated: a living waveform being "written" across
         the lane (the old take dims underneath), with the generator's status. */
     void setGenerating (bool active, const juce::String& status = {}, double progress = -1.0);
+    /** The next waveform is a new sound (a new take, a fresh capture): it draws itself in from
+        left to right instead of cross-fading. */
+    void revealNext() { revealPending = true; }
 
     /** Return the file to drag to the DAW (rendered on demand); empty = no drag. */
     std::function<juce::File()> onDragOut;
@@ -115,5 +118,7 @@ private:
     juce::Image cache, previous;   // previous: the old waveform, cross-faded out on a change
     bool cacheValid = false;
     motion::Value swap { 1.0f };
+    motion::Value reveal { 1.0f };      // 0..1 wipe position of a new sound
+    bool revealPending = false;
 };
 } // namespace context::ui

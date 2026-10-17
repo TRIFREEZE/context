@@ -1,4 +1,5 @@
 #include "LanesPanel.h"
+#include "Generation/Taste.h"
 #include "PluginProcessor.h"
 
 namespace context::ui
@@ -139,6 +140,20 @@ LanesPanel::LanesPanel (ContextAudioProcessor& p) : processor (p), overlay (p.se
     ctxMenu.onClick = [this] { showContextMenu(); };
     outMenu.onClick = [this] { showOutputMenu(); };
 
+    verdict.onKeep = [this] { keepGeneration (verdict.generationId()); };
+    verdict.onPass = [this] (const juce::StringArray& why) { passGeneration (verdict.generationId(), verdict.takeId(), why); };
+    verdict.onNewTake = [this]
+    {
+        if (const auto r = processor.services().history().find (verdict.generationId()))
+        {
+            const auto e = processor.regenerate (*r);
+            if (! e.ok)
+                processor.session().notify (e.error.userMessage, true);
+        }
+    };
+    verdict.onLayoutChanged = [this] { layoutVerdict(); };
+    addChildComponent (verdict);
+
     bpmChip.onClick = [this] { showTempoSheet (*this, processor); };
     keyChip.onClick = [this] { showKeySheet (*this, processor); };
     addAndMakeVisible (bpmChip);
@@ -272,6 +287,7 @@ void LanesPanel::refresh()
 {
     auto& s = processor.session();
     const auto st = s.getState();
+    updateVerdict();
     timeline = computeTimeline();
     ruler.setTimeline (timeline);
     contextLane.setTimeline (timeline);
@@ -281,6 +297,9 @@ void LanesPanel::refresh()
     juce::int64 ctxLen = 0;
     if (ctx.hasAudio && ctx.sampleRate > 0)
         ctxLen = (juce::int64) std::llround ((double) ctx.lengthSamples * timeline.sampleRate / ctx.sampleRate);
+    if (ctx.peaks != nullptr && lastContextPeaks == nullptr)
+        contextLane.revealNext();                  // a fresh capture draws itself in
+    lastContextPeaks = ctx.peaks;
     contextLane.setPeaks (ctx.peaks, ctxLen);
     contextLane.setMissing (ctx.missing ? ctx.message : juce::String());
     const auto cap = s.captureStatus();
@@ -291,6 +310,11 @@ void LanesPanel::refresh()
     contextLane.setBusy (cap.processing && ! cap.recording(), "Analysing the capture...");
 
     const auto out = s.outputLane();
+    if (st.baseTake != lastBaseTake && out.hasAudio)
+    {
+        lastBaseTake = st.baseTake;
+        outputLane.revealNext();                   // a new take draws itself in
+    }
     outputLane.setPeaks (out.peaks, out.hasAudio ? out.lengthSamples : 0);
     outputLane.setMissing (out.missing ? out.message : juce::String());
     outputLane.setEmptyText ("Drop audio here", "or generate something above");
@@ -515,6 +539,75 @@ juce::String LanesPanel::rangeText (double from, double to) const
     return pos (from) + glyph (" \xe2\x80\x93 ") + pos (to) + "  (" + len + ")";
 }
 
+void LanesPanel::updateVerdict()
+{
+    // Ask once about each new generated take that becomes the lane's sound and has no verdict.
+    if (verdict.isVisible() && ! verdict.isAsking())
+        return;                                    // showing "Kept" / "Passed": let it finish
+    auto& s = processor.session();
+    juce::String gen, takeId;
+    int number = 0;
+    for (const auto& t : s.takes())
+        if (t.isBase && t.ready && t.generationId.isNotEmpty())
+        {
+            gen = t.generationId;
+            takeId = t.id;
+            number = t.number;
+        }
+    if (gen.isEmpty())
+    {
+        verdict.dismissQuestion();
+        return;
+    }
+    if (gen == verdict.generationId() && verdict.isAsking())
+        return;
+    const auto r = processor.services().history().find (gen);
+    if (! r || taste::ratingOf (*r) != 0 || verdictAsked.count (gen) > 0)
+    {
+        verdict.dismissQuestion();
+        return;
+    }
+    verdictAsked.insert (gen);
+    verdict.ask (gen, takeId, "Take " + juce::String (number));
+    layoutVerdict();
+    verdict.toFront (false);
+}
+
+void LanesPanel::layoutVerdict()
+{
+    // Floats over the lower part of the sound lane, centred (the selection bar uses the top edge).
+    const auto lane = outputLane.getBounds();
+    const int w = juce::jmin (verdict.idealWidth(), lane.getWidth() - 16), h = 36;
+    verdict.setBounds (juce::Rectangle<int> (w, h).withCentre ({ lane.getCentreX(), lane.getBottom() - h / 2 - 10 }));
+}
+
+void LanesPanel::keepGeneration (const juce::String& gen)
+{
+    if (gen.isEmpty()) return;
+    processor.services().history().setRating (gen, 1);
+    verdictAsked.insert (gen);
+    if (gen == verdict.generationId() && verdict.isVisible())
+        verdict.showKept();
+    else
+        processor.session().notify ("Kept: saved to Favorites.");
+}
+
+void LanesPanel::passGeneration (const juce::String& gen, const juce::String& takeId, const juce::StringArray& why)
+{
+    if (gen.isEmpty()) return;
+    auto& history = processor.services().history();
+    history.setRating (gen, -1, why);
+    verdictAsked.insert (gen);
+    const auto r = history.find (gen);
+    if (takeId.isNotEmpty())
+        processor.session().passTake (takeId);
+    const auto steer = r ? taste::forPrompt (history.recent (300), r->prompt, r->type) : taste::Steer{};
+    if (gen == verdict.generationId() && verdict.isVisible())
+        verdict.showPassed (steer.labels, processor.isLicensed() && ! processor.generation().isBusy());
+    else
+        processor.session().notify (steer.labels.isEmpty() ? juce::String ("Passed.") : "Passed. Next takes: " + steer.labels.joinIntoString (", ").toLowerCase());
+}
+
 void LanesPanel::updateSelectionBar()
 {
     const auto sel = overlay.selection();
@@ -659,6 +752,15 @@ void LanesPanel::showEditMenu (juce::Point<int> at)
         for (const auto& tk : takes)
             if (tk.id == v.clips[(size_t) clip].take && ! tk.isBase)
                 m.addItem (8, "Use take " + juce::String (tk.number) + " everywhere");
+        for (const auto& tk : takes)
+            if (tk.id == v.clips[(size_t) clip].take && tk.generationId.isNotEmpty())
+            {
+                const auto r = processor.services().history().find (tk.generationId);
+                const int rating = r ? taste::ratingOf (*r) : 0;
+                m.addSeparator();
+                m.addItem (20, "Keep take " + juce::String (tk.number), rating <= 0, rating > 0);
+                m.addItem (21, "Pass on take " + juce::String (tk.number) + "...");
+            }
     }
     m.addSeparator();
     addOutputItems (m, 1000);
@@ -680,6 +782,22 @@ void LanesPanel::showEditMenu (juce::Point<int> at)
             case 7: if (sel) ss.editDuplicate (sel->first, sel->second); break;
             case 8: if (clip >= 0) ss.useTakeEverywhere (v.clips[(size_t) clip].take); break;
             case 9: ss.cancelPendingFill(); break;
+            case 20:
+            case 21:
+                if (clip >= 0)
+                    for (const auto& tk : takes)
+                        if (tk.id == v.clips[(size_t) clip].take && tk.generationId.isNotEmpty())
+                        {
+                            if (r == 20)
+                                safe->keepGeneration (tk.generationId);
+                            else
+                            {
+                                safe->verdict.askWhy (tk.generationId, tk.id, "Take " + juce::String (tk.number));
+                                safe->layoutVerdict();
+                                safe->verdict.toFront (false);
+                            }
+                        }
+                break;
             default: break;
         }
         if (r >= 100 && r < 100 + (int) takes.size() && sel)
@@ -896,6 +1014,8 @@ void LanesPanel::resized()
     contextLane.setBounds (ctxRow);
     outHeader = outRow.removeFromLeft (headerWidth).withTrimmedRight (space::m);
     outputLane.setBounds (outRow);
+    if (verdict.isVisible())
+        layoutVerdict();
     overlay.setBounds (outputLane.getLocalBounds());
     layoutLaneHeader (ctxHeader, true);
     layoutLaneHeader (outHeader, false);

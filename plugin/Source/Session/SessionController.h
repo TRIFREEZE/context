@@ -163,6 +163,7 @@ public:
     struct TakeInfo
     {
         juce::String id, name;
+        juce::String generationId;      // history id of a generated take ("" for an imported file)
         int number = 0;                 // "Take 3"
         bool isBase = false, loading = false, missing = false, ready = false, used = false;
         WaveformPeaks::Ptr peaks;       // of the take fitted to the lane
@@ -170,6 +171,9 @@ public:
     std::vector<TakeInfo> takes() const;
     void useTakeEverywhere (const juce::String& takeId);
     void removeTake (const juce::String& takeId);
+    /** "Not this one": the take leaves the lane (any take, also the base: then the newest other
+        take becomes the base and edits that use other takes stay). The only take clears the lane. */
+    void passTake (const juce::String& takeId);
 
     // ---- editing (positions in beats = quarter notes; see edit::) ----
     struct EditView
@@ -284,6 +288,18 @@ private:
     template <typename Fn> void editWith (Fn&& op);
     Snapshot currentSnapshot() const;
     void commitHistory();
+    /** A discrete action (a click, not a drag) is its own undo step, on any machine: whatever is
+        still settling is committed before it, and the action itself right after. Nested actions
+        count once (only the outermost commits). */
+    struct DiscreteStep
+    {
+        explicit DiscreteStep (SessionController& c) : s (c) { if (s.discreteDepth++ == 0) s.commitPending(); }
+        ~DiscreteStep() { if (--s.discreteDepth == 0) s.commitPending(); }
+        SessionController& s;
+    };
+    void commitPending();
+    int discreteDepth = 0;
+    juce::String lastChainStructure;
     void applySnapshot (const Snapshot&);
     void reconcile (const SessionState& before);
     void applyEngineSettings();

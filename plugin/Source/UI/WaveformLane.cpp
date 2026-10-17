@@ -96,6 +96,7 @@ void TimelineRuler::paint (juce::Graphics& g)
 WaveformLane::WaveformLane (juce::Colour c, bool acceptsDrops) : colour (c), dropTarget (acceptsDrops)
 {
     swap.onChange = [this] { repaint(); };
+    reveal.onChange = [this] { repaint(); if (reveal.get() >= 1.0f) previous = {}; };
 }
 
 bool WaveformLane::looksLikeAudio (const juce::String& path)
@@ -114,8 +115,16 @@ void WaveformLane::setTimeline (const TimelineView& v)
 void WaveformLane::setPeaks (WaveformPeaks::Ptr p, juce::int64 length)
 {
     if (p == peaks && length == laneLength) return;
-    // A new waveform (re-fit, edit, new take) cross-fades over the old one, so the change is visible.
-    if (cacheValid && cache.isValid() && peaks != nullptr && p != nullptr && motion::enabled())
+    // A new sound draws itself in; any other change (re-fit, edit) cross-fades over the old one.
+    if (revealPending && p != nullptr && motion::enabled())
+    {
+        revealPending = false;
+        previous = (cacheValid && cache.isValid() && peaks != nullptr) ? cache : juce::Image();
+        swap.snap (1.0f);
+        reveal.snap (0.0f);
+        reveal.set (1.0f, 720.0f, motion::Ease::OutCubic);
+    }
+    else if (cacheValid && cache.isValid() && peaks != nullptr && p != nullptr && motion::enabled())
     {
         previous = cache;
         swap.snap (0.0f);
@@ -374,7 +383,32 @@ void WaveformLane::paint (juce::Graphics& g)
     if (! cacheValid || cache.getWidth() != getWidth() * 2)
         renderCache();
     const float s = swap.get();
-    if (previous.isValid() && s < 1.0f && previous.getWidth() == cache.getWidth())
+    const float rv = reveal.get();
+    if (rv < 1.0f && peaks != nullptr)
+    {
+        // Wipe: the new sound is drawn up to the moving edge, the old one (dimmed) after it.
+        const float x = r.getX() + r.getWidth() * rv;
+        if (previous.isValid() && previous.getWidth() == cache.getWidth())
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (r.withLeft (x).toNearestInt());
+            g.setOpacity (0.35f);
+            g.drawImage (previous, r, juce::RectanglePlacement::stretchToFit);
+            g.setOpacity (1.0f);
+        }
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (r.withRight (x + 1.0f).toNearestInt());
+            g.drawImage (cache, r, juce::RectanglePlacement::stretchToFit);
+        }
+        const float fadeOut = juce::jlimit (0.0f, 1.0f, (1.0f - rv) * 6.0f);    // the edge fades as it lands
+        juce::ColourGradient trail (colour.withAlpha (0.0f), x - 40.0f, r.getCentreY(), colour.withAlpha (0.22f * fadeOut), x, r.getCentreY(), false);
+        g.setGradientFill (trail);
+        g.fillRect (juce::Rectangle<float> (x - 40.0f, r.getY(), 40.0f, r.getHeight()));
+        g.setColour (colour.withAlpha (0.9f * fadeOut));
+        g.fillRect (x - 0.75f, r.getY() + 4.0f, 1.5f, r.getHeight() - 8.0f);
+    }
+    else if (previous.isValid() && s < 1.0f && previous.getWidth() == cache.getWidth())
     {
         g.setOpacity (1.0f - s);
         g.drawImage (previous, r, juce::RectanglePlacement::stretchToFit);

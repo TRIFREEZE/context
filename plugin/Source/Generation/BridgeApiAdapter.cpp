@@ -62,6 +62,7 @@ juce::String BridgeApiAdapter::serializeGenerateRequest (const GenerationRequest
         if (r.instrumental)    o->setProperty ("instrumental", *r.instrumental);
         if (r.seed)            o->setProperty ("seed", *r.seed);
         if (r.variationOfRemoteId.isNotEmpty()) o->setProperty ("variationOf", r.variationOfRemoteId);
+        if (r.negativeTags.isNotEmpty()) o->setProperty ("negativeTags", r.negativeTags.substring (0, 200));
         if (r.contextAnalysis && r.contextAnalysis->valid)
             o->setProperty ("context", r.contextAnalysis->toVar());
         if (audioContextWav != nullptr && audioContextWav->getSize() > 0 && cfg.supportsAudioUpload)

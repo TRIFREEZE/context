@@ -59,7 +59,7 @@ class IconButton : public juce::Button
 {
 public:
     enum class Icon { Play, Stop, Rewind, Loop, Power, Plus, Folder, Copy, Star, StarFilled, Drag, Record, Close, Save, More, Refresh, Variation,
-                      Undo, Redo, Split, Trash, Keys, Sparkle, Takes, Magnet, Help };
+                      Undo, Redo, Split, Trash, Keys, Sparkle, Takes, Magnet, Help, Check };
     explicit IconButton (Icon, const juce::String& tooltip = {});
     void setIcon (Icon i) { icon = i; repaint(); }
     void setOnColour (juce::Colour c) { onColour = c; repaint(); }

@@ -31,6 +31,21 @@ your DAW.
 * Everything is saved with the DAW project (settings and references only — no audio, no
   credentials). Older projects load unchanged.
 
+### New in V2.2 (Keep / Pass)
+
+* **Keep / Pass** floats over each new take. **Keep** marks it kept (and a Favorite). **Pass** asks
+  *what was off?* (Timing, Off key, Too busy, Too empty, Wrong sound, Quality), removes the take and
+  **steers the next takes of that prompt**: words added to the prompt (with Enhance on) and things to
+  avoid sent as negative tags (the Kie.ai bridge passes them to add-vocals, cover and extend).
+  Right-click a clip to Keep or Pass any take later. History shows each verdict.
+* This is steering, not training: Kie.ai/Suno can't be fine-tuned from Context. Your verdicts are
+  recorded, and **History > Export ratings** saves them as JSON (prompt, settings, verdict, reasons,
+  file) if you ever want to tune a model of your own.
+* More motion: new takes and fresh captures draw themselves in across the lane, light travels
+  around the prompt while generating, BPM / key values settle in when they change, the Keep / Pass
+  card springs in and its check draws itself.
+* CI: failing checks now show as annotations on the run page.
+
 ### New in V2.1.1
 
 * **Send my track works.** Two bugs stopped it: the plugin encoded your track in JUCE's private

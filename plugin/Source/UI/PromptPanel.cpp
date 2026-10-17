@@ -292,6 +292,27 @@ void PromptPanel::paint (juce::Graphics& g)
         drawProgress (g, progressArea.toFloat(), progress);
 }
 
+void PromptPanel::paintOverChildren (juce::Graphics& g)
+{
+    // While generating, light travels around the prompt box: the request is out and being worked on.
+    const float amount = motion::follow (*this, "genGlow", busy ? 1.0f : 0.0f, busy ? motion::duration::panel : motion::duration::panel * 2.0f);
+    if (amount <= 0.001f)
+        return;
+    const auto r = prompt.getBounds().toFloat().reduced (0.5f);
+    const double t = motion::enabled() ? motion::nowMs() / 1000.0 : 0.0;
+    const float phase = (float) std::fmod (t / 2.4, 1.0);
+    const float cx = r.getX() - r.getWidth() * 0.3f + phase * r.getWidth() * 1.6f;
+    g.setColour (colours::accent.withAlpha (0.18f * amount));
+    g.drawRoundedRectangle (r, radius::control, 1.0f);
+    juce::ColourGradient sweep (colours::accent.withAlpha (0.0f), cx - 120.0f, r.getCentreY(),
+                                colours::accent.withAlpha (0.0f), cx + 120.0f, r.getCentreY(), false);
+    sweep.addColour (0.5, colours::accent.withAlpha (0.85f * amount));
+    g.setGradientFill (sweep);
+    g.drawRoundedRectangle (r, radius::control, 1.5f);
+    if (motion::enabled())
+        motion::Clock::instance().repaintUntil (*this, motion::nowMs() + 100.0);
+}
+
 void PromptPanel::resized()
 {
     auto r = getLocalBounds().reduced (space::l, space::m);

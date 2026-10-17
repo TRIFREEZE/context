@@ -81,7 +81,8 @@ Request:
   "context": { "bpm": 142, "key": "F#", "mode": "minor", "lowEnd": "High", "mids": "Medium",
                "highs": "Low", "stereoWidth": "Wide", "transientDensity": "Moderate", "tonalBalance": "Dark" },
   "audioContext": { "format": "wav", "encoding": "base64", "data": "<base64 WAV>", "seconds": 13.714, "bars": 8 },
-  "contextMode": "layer"
+  "contextMode": "layer",
+  "negativeTags": "busy, cluttered, dense"
 }
 ```
 * `prompt` is what to generate from (context-enhanced unless the user turned enhancement off); `userPrompt` is exactly what they typed.
@@ -92,6 +93,9 @@ Request:
   when one exists, otherwise the last 8 s the plugin heard (mono 22.05 kHz, no `bars`).
   The WAV is at most 16 MB.
 * `contextMode` is one of the bridge's `contextModes`; only sent together with `audioContext`.
+* `negativeTags` (optional, ≤ 200 characters, comma-separated): what the producer's **Pass**
+  verdicts on this prompt said to avoid. Bridges pass it to models that accept negative tags and
+  may ignore it otherwise.
 
 Response (`200` or `202`):
 ```json
