@@ -1,7 +1,7 @@
 // Test runner for Context.
 //   ContextTests --unit                         run all unit tests
-//   ContextTests --unit --category "Prompt"     run one category
-//   ContextTests --integration <bridgeUrl>      run bridge integration tests against a live bridge
+//   ContextTests --category=Prompt              run one category
+//   ContextTests --integration=<bridgeUrl>      run bridge integration tests against a live bridge
 #include <juce_core/juce_core.h>
 #include <juce_events/juce_events.h>
 #include "TestSupport.h"
@@ -19,6 +19,9 @@ int main (int argc, char* argv[])
     if (args.containsOption ("--integration"))
     {
         context::test::integrationBridgeUrl() = args.getValueForOption ("--integration");
+        for (auto opt : { "--wrong-protocol", "--no-generate", "--closed" })
+            if (args.containsOption (opt))
+                context::test::integrationUrls().set (juce::String (opt).substring (2), args.getValueForOption (opt));
         runner.runTestsInCategory ("Integration");
     }
     else if (args.containsOption ("--category"))

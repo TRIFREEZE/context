@@ -29,6 +29,13 @@ inline juce::String& integrationBridgeUrl()
     return url;
 }
 
+/** Extra bridge URLs for integration tests: "wrong-protocol", "no-generate", "closed". */
+inline juce::StringPairArray& integrationUrls()
+{
+    static juce::StringPairArray urls;
+    return urls;
+}
+
 /** Spin the message loop until pred() is true or the timeout expires. */
 inline bool waitUntil (std::function<bool()> pred, int timeoutMs)
 {
