@@ -1,0 +1,34 @@
+#pragma once
+
+#include "AnalysisTypes.h"
+#include <juce_audio_basics/juce_audio_basics.h>
+#include <vector>
+
+namespace context
+{
+/** Pure, stateless analysis functions (no threads, no I/O) — easy to unit test.
+    Called on the analysis worker thread only. */
+namespace analysis
+{
+    /** Full analysis of a captured snapshot. `audio` may be mono or stereo. */
+    TrackAnalysis analyze (const juce::AudioBuffer<float>& audio, double sampleRate, std::optional<double> hostBpm);
+
+    // ---- building blocks (exposed for tests) ----
+    struct KeyEstimate { int root = -1; bool minor = false; double confidence = 0.0; bool known = false; };
+    KeyEstimate estimateKey (const std::array<double, 12>& chroma);
+    std::array<double, 12> chromaFromSpectrum (const std::vector<double>& magnitude, double sampleRate, int fftSize);
+
+    struct StereoEstimate { double sideToMid = 0.0; double correlation = 1.0; StereoWidth width = StereoWidth::Narrow; };
+    StereoEstimate estimateStereo (const juce::AudioBuffer<float>& audio);
+
+    struct OnsetEstimate { double onsetsPerSecond = 0.0; TransientDensity density = TransientDensity::Sparse;
+                           std::optional<double> bpm; double tempoConfidence = 0.0; };
+    OnsetEstimate estimateOnsets (const std::vector<float>& mono, double sampleRate);
+
+    Level levelFromRatio (double ratio);
+    double toDb (double linear);
+
+    /** Minimum audio (seconds, non-silent) needed for a meaningful analysis. */
+    inline constexpr double minimumSeconds = 2.0;
+}
+} // namespace context
