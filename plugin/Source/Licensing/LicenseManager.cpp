@@ -101,7 +101,12 @@ std::optional<juce::Time> LicenseManager::getOfflineUntil() const
 juce::String LicenseManager::serverBase() const
 {
     const auto parsed = urls::parseBaseUrl (cfg.serverUrl ? cfg.serverUrl() : juce::String());
-    return parsed.ok ? parsed.normalized : juce::String();
+    if (! parsed.ok)
+        return {};
+    // License keys must not travel unencrypted: plain http is allowed only to this computer (development).
+    if (parsed.scheme == "http" && parsed.kind != urls::HostKind::Loopback)
+        return {};
+    return parsed.normalized;
 }
 
 void LicenseManager::setState (Status s, juce::String m)
@@ -242,7 +247,8 @@ void LicenseManager::activate (const juce::String& rawKey)
     const auto base = serverBase();
     if (base.isEmpty())
     {
-        setState (Status::Unlicensed, "The licensing server address in Settings is not valid.");
+        setState (Status::Unlicensed, "The licensing server address in Settings is not valid. It must start with https:// "
+                                      "(plain http is only allowed for 127.0.0.1 / localhost while testing).");
         return;
     }
 

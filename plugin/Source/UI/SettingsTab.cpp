@@ -35,6 +35,13 @@ namespace
         s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 80, 22);
         s.setTextValueSuffix (suffix);
     }
+
+    /** Saves when a drag ends or a value is typed into the text box (not on every drag step). */
+    void onCommit (juce::Slider& s, std::function<void()> commit)
+    {
+        s.onDragEnd = commit;
+        s.onValueChange = [&s, commit] { if (! s.isMouseButtonDown()) commit(); };
+    }
 }
 
 class SettingsTab::Content : public juce::Component
@@ -103,12 +110,12 @@ public:
 
         styleSlider (timeout, " s");
         timeout.setRange (30, 1800, 10);
-        timeout.onDragEnd = [this, &settings] { const int v = (int) timeout.getValue(); settings.update ([v] (Settings& s) { s.generationTimeoutSeconds = v; }); };
+        onCommit (timeout, [this, &settings] { const int v = (int) timeout.getValue(); settings.update ([v] (Settings& s) { s.generationTimeoutSeconds = v; }); });
 
         // ---------------- Track context ----------------
         styleSlider (captureSeconds, " s");
         captureSeconds.setRange (4, 30, 1);
-        captureSeconds.onDragEnd = [this, &settings] { const int v = (int) captureSeconds.getValue(); settings.update ([v] (Settings& s) { s.captureSeconds = v; }); };
+        onCommit (captureSeconds, [this, &settings] { const int v = (int) captureSeconds.getValue(); settings.update ([v] (Settings& s) { s.captureSeconds = v; }); });
         promptExpansion.onClick = [this, &settings] { const bool v = promptExpansion.getToggleState(); settings.update ([v] (Settings& s) { s.promptExpansion = v; }); };
         showEnhanced.onClick = [this, &settings] { const bool v = showEnhanced.getToggleState(); settings.update ([v] (Settings& s) { s.showEnhancedPrompt = v; }); };
         allowAudioContext.onClick = [this] { toggleAudioContext(); };
@@ -120,18 +127,18 @@ public:
         openFolderButton.onClick = [this] { auto f = processor.services().generatedFolder(); f.createDirectory(); f.revealToUser(); };
         styleSlider (cacheLimit, " MB");
         cacheLimit.setRange (200, 20000, 100);
-        cacheLimit.onDragEnd = [this, &settings]
+        onCommit (cacheLimit, [this, &settings]
         {
             const int v = (int) cacheLimit.getValue();
             settings.update ([v] (Settings& s) { s.cacheLimitMB = v; });
             processor.services().scheduleCacheMaintenance();
-        };
+        });
         clearCacheButton.onClick = [this] { clearCache(); };
 
         // ---------------- Preview ----------------
         styleSlider (previewGain, " dB");
         previewGain.setRange (-24.0, 0.0, 0.5);
-        previewGain.onValueChange = [this, &settings] { const float v = (float) previewGain.getValue(); settings.update ([v] (Settings& s) { s.previewGainDb = v; }); };
+        onCommit (previewGain, [this, &settings] { const float v = (float) previewGain.getValue(); settings.update ([v] (Settings& s) { s.previewGainDb = v; }); });
 
         // ---------------- Diagnostics ----------------
         logLevel.addItemList ({ "Errors only", "Warnings", "Normal", "Verbose (debug)" }, 1);
@@ -150,10 +157,10 @@ public:
         developerMode.onClick = [this, &settings] { const bool v = developerMode.getToggleState(); settings.update ([v] (Settings& s) { s.developerMode = v; }); };
         styleSlider (mockFailure, " %");
         mockFailure.setRange (0, 100, 1);
-        mockFailure.onDragEnd = [this, &settings] { const int v = (int) mockFailure.getValue(); settings.update ([v] (Settings& s) { s.mockFailurePercent = v; }); };
+        onCommit (mockFailure, [this, &settings] { const int v = (int) mockFailure.getValue(); settings.update ([v] (Settings& s) { s.mockFailurePercent = v; }); });
         styleSlider (mockSpeed, "x");
         mockSpeed.setRange (0.05, 3.0, 0.05);
-        mockSpeed.onDragEnd = [this, &settings] { const double v = mockSpeed.getValue(); settings.update ([v] (Settings& s) { s.mockLatencyScale = v; }); };
+        onCommit (mockSpeed, [this, &settings] { const double v = mockSpeed.getValue(); settings.update ([v] (Settings& s) { s.mockLatencyScale = v; }); });
 
         // ---------------- About ----------------
         checkUpdates.onClick = [this] { processor.services().license().checkForUpdate(); updateLabel.setText ("Checking...", juce::dontSendNotification); };

@@ -196,6 +196,20 @@ public:
             expect (! lm->isLicensed());
         }
 
+        beginTest ("License keys are never sent over plain http to another host");
+        {
+            stateFile.deleteFile();
+            LicenseManager::Config c;
+            c.stateFile = stateFile;
+            c.publicKeyBase64 = signer.publicKey();
+            c.serverUrl = [] { return juce::String ("http://licensing.example.com"); };
+            c.deviceId = device;
+            LicenseManager lm (c);
+            lm.activate ("CTX-AAAA-BBBB-CCCC-DDDD");
+            expect (lm.getMessage().contains ("https://"), lm.getMessage());
+            expect (lm.waitForIdle (1000));
+        }
+
         beginTest ("Build without a public key can't be activated but loads fine");
         {
             LicenseManager::Config c;

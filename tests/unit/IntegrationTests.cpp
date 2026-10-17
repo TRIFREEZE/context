@@ -132,6 +132,14 @@ public:
             }
         }
 
+        beginTest ("Unicode and very long prompts survive the round trip");
+        {
+            Rig rig (makeProvider (url));
+            const auto job = rig.run (juce::String (juce::CharPointer_UTF8 ("\xf0\x9f\x94\xa5 dark vocal \xe2\x80\x94 \xc3\xbc" "n" "\xc3\xaf" "c" "\xc3\xb6" "d" "\xc3\xa9 \"quotes\" \\ back\\slash"))
+                                      + juce::String::repeatedString (" layered", 100));
+            expect (job.state == JobState::Complete, toId (job.error.code) + " " + job.error.technicalDetail);
+        }
+
         beginTest ("Audio context is uploaded only when requested, temp file removed");
         {
             Rig rig (makeProvider (url));
