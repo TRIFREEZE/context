@@ -18,6 +18,12 @@ if(Python3_Interpreter_FOUND)
                      --bridge "${CMAKE_SOURCE_DIR}/tools/reference_bridge/reference_bridge.py")
     set_tests_properties(bridge_integration PROPERTIES TIMEOUT 600)
 
+    # Kie.ai bridge against a fake Kie.ai server (no account or network needed).
+    add_test(NAME kie_bridge_e2e
+             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/integration/run_kie_bridge_e2e.py"
+                     --tests-exe "$<TARGET_FILE:ContextTests>")
+    set_tests_properties(kie_bridge_e2e PROPERTIES TIMEOUT 600)
+
     add_test(NAME license_integration
              COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/integration/run_license_integration.py"
                      --tests-exe "$<TARGET_FILE:ContextTests>"

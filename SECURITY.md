@@ -87,6 +87,12 @@ Admins can free a device slot with `python -m app.admin reset <KEY>`.
   anything else are never touched.
 * All JSON state (settings, history, license) is written atomically. Corrupt files
   are moved aside and replaced with defaults.
+* **V2 workspace.** Captured track context, dropped samples and processed renders stay on
+  the computer: they are decoded and processed locally and never sent anywhere (the only
+  audio that can leave is the opt-in *Audio ctx* snapshot to the user's own bridge, as
+  before). Dropped files are read, never modified; length is capped before decoding.
+  The DAW project stores only settings, ids and absolute file paths — no audio, no
+  credentials. Restored paths must be absolute and are only ever *read*.
 
 ## Logging
 

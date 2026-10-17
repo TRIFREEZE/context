@@ -4,6 +4,12 @@ This document describes how Context is put together, who owns what, and which
 thread is allowed to do what. It was written before implementation (Phase 2)
 and kept in sync with the code afterwards.
 
+* **Part I** (sections 1–15) — the original plugin: licensing, bridge, generation,
+  analysis, history. All of it is still in place and unchanged in behaviour.
+* **Part II** (sections V2.1–V2.14) — the Context V2 workspace added on top: captured
+  track context, the two-lane timeline, musical fitting / time-stretching, the effect
+  rack, export and drag-to-DAW. Includes **HOW TO ADD A NEW EFFECT** (V2.7).
+
 ---
 
 ## 1. High-level system
@@ -42,6 +48,11 @@ plugin/Source/
   Core/                  build info, product config, app paths, settings, shared services, worker thread
   Utils/                 filename sanitizer, atomic file writes, JSON safety, URL safety, redaction
   Audio/                 CaptureBuffer (rolling ring buffer), PreviewPlayer
+                         V2: MusicalTime, AudioAsset, Resampler, ContextRecorder, PreviewEngine,
+                         TimeFit, TimeStretch/ (stretch engines)
+  DSP/                   V2: EffectParameter, EffectProcessor, EffectRegistry, EffectChain,
+                         Effects/ (the 20 built-in effects)
+  Session/               V2: SessionState, SessionController, ContextCache
   Analysis/              TrackAnalyzer (pure DSP functions), AnalysisController (worker)
   Generation/            request/result models, IAudioGenerationProvider, Mock + LocalBridge providers,
                          BridgeConfiguration/BridgeApiAdapter, PromptBuilder, SynthAudio, GenerationController
@@ -49,7 +60,8 @@ plugin/Source/
   Licensing/             DeviceId, LicenseToken (Ed25519 verify), LicenseManager
   Storage/               Logger, HistoryStore, CacheManager
   Security/              compiled-in public key handling
-  UI/                    look-and-feel and all components
+  UI/                    design system (Theme, Controls) and all components; V2 Workspace
+  Resources/fonts        Inter (SIL OFL), embedded via juce_add_binary_data
 third_party/monocypher   Ed25519 signature verification (vendored, BSD-2/CC0)
 backend/                 licensing server + admin CLI + tests
 tools/reference_bridge   stdlib-only Python test bridge implementing the Context Bridge Protocol
@@ -332,3 +344,321 @@ as typed but structured fields still go along.
 | Shutdown | Destructors cancel → join → destroy; tokens abort in-flight HTTP. |
 | Security | Bridge restricted to loopback by default; non-local requires opt-in + acknowledgement; downloads size-capped and decoder-validated; profiles are data-only; logs redacted; license backend never sees prompts or audio. |
 | JSON | Responses size-capped (2 MB) and nesting-depth checked before parsing to avoid stack exhaustion. |
+
+---
+---
+
+# Part II — Context V2 workspace
+
+V2 was added **next to** the existing system, not in place of it. The generation
+controller, bridge providers, licensing, history, analysis and the old preview player
+are the same classes as before; V2 consumes their results. If every V2 class were
+removed, Part I would still compile and behave as it did.
+
+## V2.1 Existing architecture (what V2 hooks into)
+
+| Existing piece | How V2 uses it |
+|---|---|
+| `ContextAudioProcessor::processBlock` | Still passes audio through and feeds `CaptureBuffer`. Then, in order: `ContextRecorder::process` (exact-bar capture) and `PreviewEngine::renderAdd` (two-lane audition). Neither allocates, locks or does I/O. |
+| `GenerationController` | When a job completes the processor loads the result into the session (`lastAutoLoadedResult` guards against loading twice). The requested duration is now derived from the BARS selector (`makeRequest`, non-OneShot/FX types, capped by the bridge's `maxDurationSeconds`). |
+| `AnalysisController` | The captured context is analysed with the existing `TrackAnalyzer`; `setExternalResult` lets the session hand in that result so prompt building uses the captured 8 bars. |
+| `HistoryStore` | The output lane references generated results by history id; History → *Load* sends a result to the workspace. |
+| Plugin state (`getStateInformation`) | The existing tree gains `version=2`, `session` (JSON) and `chain` (JSON). Everything old is written exactly as before. |
+| Editor | `GenerateTab` / `WaveformView` were replaced by `ui::Workspace`; tab ids, History and Settings are unchanged. |
+
+```
+ContextAudioProcessor
+ ├── (Part I members, unchanged)
+ ├── ContextRecorder      exact-bar capture, audio-thread state machine
+ ├── PreviewEngine        two-lane, sample-counted audition engine
+ ├── fx::EffectChain      the processing rack (also used offline by the exporter)
+ └── SessionController    message-thread owner of the workspace + 3 worker threads
+                          (loader, renderer, exporter)
+```
+
+## V2.2 AudioAsset pipeline
+
+Every piece of audio in the workspace — generated, imported, or captured — becomes an
+`AudioAsset` (`Audio/AudioAsset.h`): an **immutable** decoded buffer plus sample rate,
+origin (`Generated`, `Imported`, `Context`), source file, name and optional tempo hint,
+shared as `std::shared_ptr<const AudioAsset>`. Nothing ever mutates an asset; every
+processing step produces a new buffer, which is why "Restore original", A/B and
+"Reset fit" are free.
+
+```
+file / generation result / capture
+        │  assets::loadFile (worker)  — WAV, AIFF, FLAC, OGG; MP3 via the OS decoder (Windows/macOS)
+        ▼
+   AudioAsset (immutable, source rate, 1–2 ch)
+        │  TimeFit::render (worker)   — length in bars × tempo → exact target sample count
+        ▼
+   fitted stereo buffer at the HOST rate (exactly targetSamples long)
+        │  PreviewEngine program      — what you audition (rack applied in real time)
+        │  SessionController export   — rack applied offline → 24-bit WAV → drag-to-DAW
+```
+
+Generated and imported audio follow the identical path; only `origin` and the tempo hint
+differ. Sample-rate conversion uses `Resampler` (Kaiser-windowed sinc, 32 zero crossings,
+cut-off lowered when downsampling), so a 44.1 kHz asset in a 48 kHz project is converted
+once, off the audio thread.
+
+## V2.3 Context capture
+
+`ContextRecorder` records **exactly 8 bars** (`musical::contextBars`) of the plugin input.
+
+* Length: `musical::samplesForBars (bars, tempo, sampleRate)` — one `llround` of
+  `bars × quarterNotesPerBar × 60 / bpm × rate`, where `quarterNotesPerBar = num × 4 / den`.
+  120 BPM 4/4: 4 bars = 8 s, 8 bars = 16 s (unit-tested at several rates).
+* Start (decided on the audio thread):
+  * **HostSync** — host is playing and reports tempo + PPQ: recording starts on the next
+    bar line, sample-accurately inside the block.
+  * **HostTempo** — tempo but no usable position: starts on the first block above −60 dBFS.
+  * **Manual** — no host tempo: uses the manual tempo, same signal trigger.
+* Termination: the recorder writes until the target count and switches to `Complete`
+  by itself; the remainder of that block is ignored. It fails cleanly (and says why) on
+  transport stop, tempo change, buffer overflow or cancel.
+* State is one atomic (`Idle → Armed → Recording → Complete/Failed`, plus `Cancelling`)
+  changed with compare-and-swap; the buffer is allocated by `arm()` on the message thread.
+* The message thread polls the state (session timer), takes the result, and a worker
+  analyses it and stores it through `ContextCache` (`context-<id>.wav` + `.json` metadata
+  in `%APPDATA%\Context\ContextCache`). The project only stores the id and metadata.
+
+## V2.4 Playback synchronisation
+
+`PreviewEngine` plays both lanes **inside the plugin**, on one sample-counted timeline
+(independent of the DAW transport, so it works while the DAW is stopped):
+
+* The message thread publishes a *program* — `{context buffer, output buffer}` at the
+  host rate — through an atomic pointer; old programs are retired through a lock-free
+  FIFO and freed on the message thread.
+* Timeline length = the longer lane; the shorter lane repeats (4 bars under 8 bars
+  plays twice). Positions are integers; chunks never cross the timeline end, so the
+  lanes cannot drift relative to each other, ever.
+* Modes Both / Context / Output, per-lane gain, mute, solo, loop. Start/stop and
+  program swaps are crossfaded; Original/Processed A/B is a short crossfade, not a cut.
+* The rack runs only on the output lane. Its latency is compensated by reading the
+  output lane *ahead* by the chain latency, so the plugin reports 0 latency to the host
+  and the lanes stay aligned with any effect combination.
+* Nothing is played during offline (bounce) renders or when the program's sample rate
+  does not match the host — the audition never leaks into a DAW export.
+
+## V2.5 Time stretching and fitting
+
+`TimeFit` turns an asset into exactly `samplesForBars (lengthBars, sessionTempo, hostRate)`
+stereo samples. Fit modes:
+
+| Mode | What it does |
+|---|---|
+| **Auto** | Picks per material: one-shots → Trim; ≤0.5 % off → Trim; near a whole divisor → grid-locked Loop; 0.75–1.33× → Stretch; much longer → Trim; else Loop. |
+| **Fit** (Stretch) | Time-stretch to the target with the selected algorithm, pitch preserved. |
+| **Trim** | Cut / pad with a short fade. |
+| **Loop** | Repeat; each repeat starts at its own exact bar position (no drift). |
+| **Repitch** | Resample (tape-style: tempo and pitch move together). |
+
+Source tempo comes from the generator (requested BPM), then the file name (`..._128bpm`),
+then from the length (`bpmForLoop`).
+
+Stretch algorithms (`Audio/TimeStretch/`, all behind `TimeStretchEngine`):
+
+| Algorithm | Engine |
+|---|---|
+| Percussive | `TransientSliceEngine` — detected onsets are copied verbatim (1.5 ms guard), the gaps WSOLA-stretched, 3 ms slot fades |
+| Monophonic | `WsolaEngine` (40 ms frames, coarse-to-fine correlation search) |
+| Polyphonic | `PhaseVocoderEngine` (4096/4, identity phase locking, transient phase reset, stereo-coherent phases) |
+| Texture | `PhaseVocoderEngine` (8192/8, no transient reset — smooth pads and noise) |
+| Repitch | `RepitchEngine` (sinc resampling) |
+| Auto | `analyseMaterial` (onset rate, periodicity, spectral flatness) chooses one of the above |
+
+Pitch shift (±24 st) = stretch by the ratio, then resample. Fitting runs on the session's
+render worker and reports progress; a newer request makes older results stale (serials).
+
+## V2.6 EffectChain system
+
+```
+EffectRegistry::builtIn()  ──create(id)──►  EffectProcessor  (parameters: atomics)
+                                                  │
+fx::EffectChain                                  ▼
+  message thread: ordered model of Slots {instanceId, effect, bypass}  (under a mutex)
+        │ every edit publishes an immutable Snapshot (pointer list) via std::atomic
+        ▼
+  audio thread: reads the latest Snapshot, processes slots in order
+        │ replaced snapshots/effects go into a lock-free retire FIFO
+        ▼
+  message thread: collectGarbage() frees them
+```
+
+* Up to 16 effects; add, remove, move (reorder), duplicate, bypass, reset, clear. Wet/dry is
+  a `Mix` parameter on the effects where it makes sense (reverb, delay, saturation,
+  distortion, compressor, filter, modulation, lo-fi); level effects like EQ and limiter
+  don't have one.
+* Bypass is a 10 ms crossfade against a latency-aligned dry path, and latency is held
+  constant across bypass, so toggling never clicks or shifts timing. A slot woken from
+  bypass is reset first (no stale reverb tails).
+* Parameters are lock-free atomics written by the UI and smoothed in the DSP
+  (`SmoothedParam`), so knob moves never zipper.
+* `toVar()` / `fromVar()` serialise `{v:1, fx:[{type, id, bypass, params{...}}]}`; unknown types
+  and parameters are skipped, missing ones keep defaults.
+* The same chain class renders offline for export (`SessionController::renderProcessed`).
+
+Built-in effects (20): EQ, Filter, Compressor, Limiter, Gate, Transient, Saturation,
+Distortion, Soft Clipper, Reverb, Delay, Chorus, Flanger, Phaser, Tremolo, Auto-Pan,
+Bitcrusher, Downsampler, Utility, Stereo.
+
+## V2.7 Adding a new DSP effect — HOW TO ADD A NEW EFFECT
+
+1. **Derive from `EffectProcessor`** (`plugin/Source/DSP/EffectProcessor.h`). Put the class in
+   `plugin/Source/DSP/Effects/` — a new file pair, or the category file it belongs to.
+   ```cpp
+   class WidenerEffect : public EffectProcessor
+   {
+   public:
+       WidenerEffect();
+       void prepare (double sampleRate, int maxBlockSize) override;
+       void reset() noexcept override;
+       void process (juce::AudioBuffer<float>&, int numSamples, const ProcessContext&) noexcept override;
+   private:
+       EffectParameter& width;
+       SmoothedParam widthS;
+   };
+   ```
+2. **Define parameters** in the constructor with `addParameter (ParameterSpec::...)`:
+   `continuous (id, name, min, max, default, Unit, centre, tooltip)`, `choice (...)`, `onOff (...)`.
+   The `id` is saved in projects — never rename it after release. `centre` skews the knob
+   (e.g. 1000 Hz for a 20–20k frequency).
+   ```cpp
+   WidenerEffect::WidenerEffect()
+       : EffectProcessor ("widener", "Widener"),
+         width (addParameter (ParameterSpec::continuous ("width", "Width", 0.0f, 200.0f, 100.0f,
+                                                         Unit::Percent, 0.0f, "Stereo width"))) {}
+   ```
+3. **Implement `prepare` / `process` / `reset`.**
+   * `prepare` (not realtime): store the rate, allocate buffers, call `reset()`.
+   * `reset` / `process` (realtime): no allocation, locks, I/O or logging. `process` always
+     gets a **stereo** buffer of at most the prepared block size. Read parameters with
+     `param.get()` once per block and smooth them.
+   * Report `getLatencySamples()` if you delay the signal (the chain compensates),
+     `getTailSeconds()` if you ring out, `isParameterRelevant()` to grey out controls that
+     currently do nothing, and `getGainReductionDb()` to light up the inspector GR meter.
+4. **Register it in `EffectRegistry`**: one line in
+   `plugin/Source/DSP/Effects/BuiltInEffects.cpp`:
+   ```cpp
+   r.registerEffect ({ "widener", "Widener", "WIDE", "Utility", "Mid/side stereo width", make<WidenerEffect>() });
+   ```
+   The category decides where it appears in the *+ Add effect* menu.
+5. **Inspector component** — nothing to write for the standard case: the inspector is
+   generated from the parameter list (knobs for continuous, segmented/combo for choices,
+   toggles for on/off; double-click resets, typing a value works, tooltips come from the
+   spec). For a custom visual (like the EQ curve), add a branch keyed on `typeId()` in
+   `EffectRackPanel::rebuildInspector` (`plugin/Source/UI/EffectRack.cpp`), as `EqCurve` does.
+6. **Compile**: add any new `.cpp` to `plugin/Sources.cmake` and build. The generic tests in
+   `tests/unit/EffectsTests.cpp` iterate the registry, so the new effect is automatically
+   checked for: finite, sane output at 44.1/48/96 kHz and odd block sizes; parameter
+   clamp / text / state round trips; and "every visible control changes the audio".
+   Run `ContextTests --category=V2` (or `--unit`).
+
+Saved state, reordering, bypass, A/B and export pick the effect up
+automatically — no chain or UI code changes.
+
+## V2.8 State serialisation
+
+The plugin state tree (`getStateInformation`) keeps every Part I property and adds:
+
+| Property | Content |
+|---|---|
+| `version` | `2` (projects from 1.x have `1` or nothing) |
+| `session` | `SessionState::toVar()` JSON: length in bars, manual tempo/signature, fit mode / algorithm / pitch, lane gains, mute/solo, play mode, loop, A/B, output source (`generatedId` *or* absolute `importedPath`), the replaced generated id (for *Restore generated*), and the context cache id + metadata |
+| `chain` | `EffectChain::toVar()` JSON |
+
+* **No audio and no credentials are ever stored in the project** — only ids and paths.
+  Context audio lives in the context cache; generated audio in the history folder.
+* `SessionState::fromVar` never fails: every field is optional, range-checked and
+  defaulted. Old projects (no `session`) load with V2 defaults; malformed JSON, relative
+  import paths, unknown enum ids and invalid bar counts are ignored (unit-tested).
+* Restore happens on the message thread (`callAsync` + `WeakReference` to the processor),
+  because hosts may call `setStateInformation` from any thread.
+* Missing files (a deleted sample, a pruned context) show a "missing" lane with the reason
+  instead of failing the load.
+
+## V2.9 Offline rendering
+
+* **Fitting** is always offline (worker thread), producing a buffer at the host rate.
+* **Export** (`SessionController::renderProcessed`) builds a *fresh* chain from the saved
+  chain state, prepares it at the host rate, runs one warm-up pass over the end of the loop
+  (so reverb/delay tails wrap into bar 1 exactly as when looping), skips the chain's
+  latency, and writes exactly `targetSamples` as a 24-bit WAV. Compare-original exports
+  the unprocessed fit.
+* The render is staged in the background whenever processing changes; only one staged
+  file is kept in `Temp` (cleaned by `CacheManager`). Final exports are content-hashed into
+  `Generated\Processed`, so identical sounds are not duplicated.
+* The DAW's own offline bounce is untouched: the preview engine is silent when the host
+  renders offline.
+
+## V2.10 Drag-to-DAW
+
+`DragToDawPill` (transport bar) and the output lane start
+`DragAndDropContainer::performExternalDragDropOfFiles` with the **processed** export
+(what you hear: fit + rack, or the original when A/B is on Original). If the background
+render is current, the drag starts instantly; otherwise it renders synchronously first
+(sub-second for 8 bars). Files dragged into a project live in `Generated\Processed`, which
+cache cleanup never touches (it only deletes direct children of `Generated` that belong to
+unfavourited history entries). Save / Folder / Copy-path use the same file.
+
+## V2.11 Threading model
+
+| Thread | V2 work | Never |
+|---|---|---|
+| Audio | `ContextRecorder::process`, `PreviewEngine::renderAdd`, chain `process` on the current snapshot | allocation, locks (other than try-lock), I/O, logging |
+| Message | `SessionController` API, UI, chain edits (publish snapshots), garbage collection of retired programs/effects, state save/restore | decoding, fitting, rendering, FFT |
+| Session loader | decode files, analyse + cache captured context | touching UI or session state directly |
+| Session renderer | TimeFit (stretch/resample) | — |
+| Session exporter | offline chain render + WAV write | — |
+
+Results return through `MessageManager::callAsync` guarded by a lifetime token (dropped if
+the session was destroyed) and a serial number (dropped if a newer request was made).
+Workers are the last members of `SessionController`, so they are joined before anything
+they use is destroyed. Audio buffers handed between threads are immutable
+(`shared_ptr<const ...>`).
+
+## V2.12 Building locally
+
+Windows (Visual Studio 2022+, *Desktop development with C++*, CMake ≥ 3.22, Git, Python 3.10+
+for the integration tests):
+
+```bat
+scripts\build-windows.bat
+ctest --test-dir build -C Release --output-on-failure
+```
+
+The script fetches the pinned JUCE commit (`dependencies/JUCE_COMMIT`, 8.0.12), configures
+x64 and builds Release. Linux (development only): `scripts/build-linux.sh`.
+
+The VST3 is at `build\Context_artefacts\Release\VST3\Context.vst3`. Copy it to
+`C:\Program Files\Common Files\VST3\` and rescan in FL Studio.
+
+Useful test runs: `ContextTests --unit` (all unit tests), `ContextTests --category=V2`,
+`ContextTests --category=Screens` (renders UI screenshots to the temp folder).
+
+## V2.13 GitHub build
+
+Unchanged workflow (`.github/workflows/build-windows-vst3.yml`, see section 12). V2 adds
+no secrets and no new external dependencies: the Inter font is compiled in from
+`plugin/Resources/fonts` with `juce_add_binary_data`, and all DSP is in-tree. Push and
+download the `Context-Windows-VST3` artifact.
+
+## V2.14 Known limitations
+
+* Only Linux builds and tests were run while developing V2; the Windows build is
+  done by CI. **FL Studio itself has not been tested** — use the manual QA list in
+  `docs/OPERATING_GUIDE.md`.
+* MP3 import uses the operating system's decoder (Windows Media Foundation / Core Audio).
+  On Windows "N" editions without the Media Feature Pack, MP3 import is unavailable
+  (WAV/AIFF/FLAC/OGG always work). No MP3 support on Linux.
+* The stretch engines are in-house (no Rubber Band / élastique). Quality is good for
+  moderate ratios (0.75–1.33×); extreme ratios sound like what they are.
+* The audition engine plays inside the plugin; it is not tied to the DAW transport. Use
+  drag-to-DAW to place the sound on the DAW timeline.
+* Capturing needs the DAW to play audio *through* Context (put it on the master or a bus).
+* No undo stack yet — reset actions exist for effect, chain, fit and source
+  ("Restore original/generated"), and the immutable-asset design is ready for a command
+  history.
+* Effect presets per effect are not implemented; the whole chain is saved with the project.

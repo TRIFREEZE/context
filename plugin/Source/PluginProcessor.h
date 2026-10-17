@@ -7,14 +7,20 @@
 #include "Analysis/AnalysisController.h"
 #include "Generation/GenerationController.h"
 #include "Generation/PromptBuilder.h"
+#include "Audio/ContextRecorder.h"
+#include "Audio/PreviewEngine.h"
+#include "DSP/EffectChain.h"
+#include "Session/SessionController.h"
 
 namespace context
 {
 /** One Context instance in the DAW.
 
     Audio thread (processBlock): bit-exact passthrough, capture into the rolling
-    buffer (try-lock, never waits), play-head read into atomics, optional preview
-    mix. Nothing else — no I/O, no network, no allocation, no logging.
+    buffer (try-lock, never waits), exact-bar context recording (preallocated, atomic
+    hand-off), play-head read into atomics, optional preview mixes (single-file
+    preview and the two-lane workspace engine + effect chain). Nothing else — no I/O,
+    no network, no allocation, no logging.
 
     Everything else lives on worker threads owned by the controllers below. */
 class ContextAudioProcessor final : public juce::AudioProcessor,
@@ -56,6 +62,9 @@ public:
     AnalysisController& analysis()        { return *analysisController; }
     PreviewPlayer& preview()              { return previewPlayer; }
     const CaptureBuffer& capture() const  { return captureBuffer; }
+    SessionController& session()          { return *sessionController; }
+    fx::EffectChain& effects()            { return effectChain; }
+    PreviewEngine& lanes()                { return previewEngine; }
 
     /** Per-project UI state, saved in the DAW project (lightweight only). */
     struct UiState
@@ -70,7 +79,7 @@ public:
     UiState getUiState() const;
     void setUiState (const UiState&);
 
-    struct HostInfo { std::optional<double> bpm; bool playing = false; double ppq = 0; int tsNum = 4, tsDen = 4; };
+    struct HostInfo { std::optional<double> bpm; bool playing = false; double ppq = 0; int tsNum = 4, tsDen = 4; double sampleRate = 0.0; };
     HostInfo getHostInfo() const;
 
     PromptBuilder::Output previewPrompt (const UiState&) const;
@@ -106,11 +115,15 @@ private:
 
     CaptureBuffer captureBuffer;
     PreviewPlayer previewPlayer;
+    ContextRecorder contextRecorder;
+    PreviewEngine previewEngine;
+    fx::EffectChain effectChain;
 
     std::atomic<double> hostBpm { 0.0 };
     std::atomic<bool> hostPlaying { false };
     std::atomic<double> hostPpq { 0.0 };
     std::atomic<int> hostTsNum { 4 }, hostTsDen { 4 };
+    std::atomic<bool> hostPlayingKnown { false };
     std::atomic<double> currentSampleRate { 0.0 };
     std::atomic<int> currentBlockSize { 0 };
 
@@ -125,6 +138,9 @@ private:
     std::unique_ptr<AnalysisController> analysisController;
     std::unique_ptr<GenerationController> generationController;
     std::unique_ptr<SerialWorker> previewWorker;      // decodes preview files; joined before members it touches die
+    std::unique_ptr<SessionController> sessionController;
+    juce::String lastAutoLoadedResult;
+    void restoreSession (const juce::var& session, const juce::var& chain);
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (ContextAudioProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ContextAudioProcessor)

@@ -134,30 +134,103 @@ Start your bridge, then **Test Connection**.
 No bridge yet? Double-click `scripts\run-reference-bridge.bat` — a test bridge with simple
 tones — and click Test Connection.
 
-## R. Generate a sound
+## Q2. Real AI sounds with the Kie.ai bridge
 
-Type what you want → pick the type (One Shot, Loop, Vocal, ...) → **GENERATE**.
-The enhanced prompt under the type buttons shows exactly what will be sent.
-Progress shows next to the button; **Cancel** stops it.
+The Mock Provider and the reference bridge only make synthetic test tones. For real AI audio:
 
-## S. Analyze a track
+1. Get a Kie.ai account with credits, and copy your API key from the Kie.ai dashboard.
+2. Close the reference bridge if it's running, then double-click **`scripts\run-kie-bridge.bat`**.
+   On the first run, paste your API key when asked. Leave the window open.
+3. In Context, go to **Settings → Generation → Provider: Local Generation Bridge**, set the address to
+   `http://127.0.0.1:3000`, and click **Test Connection** → *Kie.ai Suno Bridge*.
+4. Generate as usual. Type **Loop** makes a seamless loop at your BPM. Add **`#song`** to a prompt to
+   get a full song.
 
-Play your song in FL Studio so audio flows through the mixer insert Context is on.
-After a few seconds click **Analyze Track**. You'll see Tempo (from FL Studio), Key with
-confidence, Low End / Mids / Highs, Stereo, Transients and Tone. With
-**Use Track Analysis** ticked, the next generation is tailored to it. Nothing is uploaded.
+Details, costs and caveats (Kie.ai is a third-party service, not Suno) are in `docs/KIE_BRIDGE.md`.
 
-## T. Preview a result
+## R. The Create screen (Context V2)
 
-Click the waveform or **▶ Play** (plays at −6 dB through the same mixer insert);
-**Stop** stops it. Previews never end up in an export/render.
+```
+┌ prompt ─────────────────────────────────────────────┐ [Generate]
+  TYPE  One Shot · Loop · Vocal · ...   BARS 2 4 6 8 16   Analysis · Audio ctx · Enhance
+├ TRACK CONTEXT ─┬ 1 ── 2 ── 3 ── 4 ── 5 ── 6 ── 7 ── 8 ─┤  ← your track (8 bars)
+├ AI / SAMPLE ───┼───────────────────────────────────────┤  ← generated or dropped sound
+  FIT  Auto · Fit · Trim · Loop · Repitch   [algorithm]   PITCH
+  PROCESSING  [EQ] → [COMP] → [VERB]   + Add effect          Processed | Original
+  ⏮ ▶ ⟲  Both · Context · Output   1.1 / 8 bars      ☆ Regenerate Variation  ⤓ 📁 ⧉  ⠿ Drag to DAW
+```
 
-## U. Drag the WAV into FL Studio
+Hover anything for a tooltip. Right-click a lane (or its ⋯ button) for more actions.
 
-Press on the waveform and **drag it onto the Playlist** (or a Channel/Sampler). The file stays
-in Context's folder and is protected from automatic cleanup once dragged.
-If a drag doesn't work in a particular spot, use **Show in Folder** and drag from Explorer,
-**Copy Path**, or **Save As...** to put a copy anywhere.
+## S. Capture your track (TRACK CONTEXT)
+
+1. Put Context on the FL Studio **Master** (or a bus everything goes through).
+2. Click **Capture**. The lane says *Armed*.
+3. Press play in FL Studio. Context starts on the next bar line and records **exactly 8 bars**,
+   then stops by itself. The bar counter shows progress.
+4. The waveform appears, with tempo and key in the lane header. The capture is analysed
+   (key, low/mid/high balance) and — with **Analysis** on — shapes the next generation.
+
+No DAW tempo (e.g. standalone)? Click the BPM in the lane header to type a tempo; capture then
+starts when audio arrives. If you change the song tempo later, the header offers **Retarget**
+(stretch the capture to the new tempo) or **Capture again**.
+*Quick analyze* in the ⋯ menu analyses the last 8 seconds without a full capture.
+
+## T. Generate, or drop your own sample (AI / SAMPLE)
+
+* Type what you want, choose a **TYPE** and **BARS** (2/4/6/8/16), click **Generate**.
+  The result lands in the lower lane, fitted to exactly that many bars at your tempo.
+* Or drag a WAV / AIFF / FLAC / MP3 file from Explorer onto the lower lane (or ⋯ → *Load sample*).
+  It goes through the same fitting and effects. *Restore generated version* brings back the AI result.
+* **FIT**: *Auto* chooses for you; *Fit* time-stretches; *Trim* cuts; *Loop* repeats; *Repitch*
+  speeds up/slows down like tape. The algorithm menu (Percussive, Monophonic, Polyphonic,
+  Texture, Repitch) changes *how* it stretches. The text on the right says what was done.
+
+## T2. Listen
+
+**▶** plays both lanes in sync, looping. **Both / Context /
+Output** choose what you hear; **M / S** and the small sliders are per-lane mute, solo and level.
+This audition plays inside Context through the mixer insert it's on — it never ends up in an
+FL Studio export.
+
+## T3. Process (PROCESSING)
+
+**+ Add effect** → pick from 20 effects (EQ, Filter, Compressor, Limiter, Gate, Transient,
+Saturation, Distortion, Soft Clipper, Reverb, Delay, Chorus, Flanger, Phaser, Tremolo,
+Auto-Pan, Bitcrusher, Downsampler, Utility, Stereo). Click an effect to edit it below;
+drag chips to reorder (order = signal flow); the power dot bypasses; right-click for
+Duplicate / Reset / Remove. Knobs: drag up/down, double-click the knob to reset, or double-click the value under it and type
+(e.g. `2.5k`, `-6`).
+**Processed | Original** compares with and without the rack. Nothing is ever written over
+the original sound.
+
+## U. Drag the result into FL Studio
+
+Press **⠿ Drag to DAW** (or the lower waveform) and drag onto the Playlist or a Channel. You
+get exactly what you hear: fitted to the bars, with the effects, as a 24-bit WAV that is
+exactly N bars long. ⤓ *Save as...*, 📁 *Show in folder* and ⧉ *Copy path* use the same file.
+Processed files live in `%APPDATA%\Context\Generated\Processed` and are never auto-deleted.
+History → **Load** brings any earlier generation back into the workspace.
+
+## U2. Manual QA checklist for FL Studio (V2)
+
+Tick these in FL Studio after installing a new build:
+
+- [ ] Plugin scan finds Context; it loads on the Master; window resizes smoothly
+- [ ] Bridge connects (status dot top-right); licensing still activates
+- [ ] Capture records 8 bars from FL Studio playback, starts on a bar line and stops by itself
+- [ ] BPM and key appear in the TRACK CONTEXT header and match the project
+- [ ] Generate at 2, 4, 6, 8 and 16 bars; each result is exactly that long (check the bar ruler)
+- [ ] Drop a WAV and an MP3 onto the lower lane; both play and fit the selected bars
+- [ ] Both / Context / Output, mute, solo and loop behave; lanes stay in sync over many loops
+- [ ] Each FIT mode and stretch algorithm audibly changes the result
+- [ ] Add, bypass, reorder, duplicate and remove effects; order changes the sound
+- [ ] Processed | Original switches without a click
+- [ ] Drag to DAW: the clip in the Playlist sounds identical to the preview and is exactly N bars
+- [ ] Save the project, close FL Studio, reopen: lanes, fit settings and effects come back
+- [ ] Change the FL Studio sample rate (Options → Audio) with Context open: audio stays correct
+- [ ] Change the project tempo after capturing: *Retarget* / *Capture again* are offered
+- [ ] Close the project with Context playing: no hang or crash
 
 ## V. Where logs are
 

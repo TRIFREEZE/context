@@ -95,6 +95,19 @@ target_include_directories(context_monocypher PUBLIC third_party/monocypher)
 set_target_properties(context_monocypher PROPERTIES POSITION_INDEPENDENT_CODE ON FOLDER "third_party")
 
 # ---------------------------------------------------------------------------
+# Embedded UI font: Inter (SIL Open Font License 1.1 — embedding in commercial
+# software is permitted; licence text ships in plugin/Resources/fonts).
+# ---------------------------------------------------------------------------
+juce_add_binary_data(context_assets
+    HEADER_NAME ContextAssets.h
+    NAMESPACE ContextAssets
+    SOURCES
+        plugin/Resources/fonts/Inter-Regular.ttf
+        plugin/Resources/fonts/Inter-Medium.ttf
+        plugin/Resources/fonts/Inter-SemiBold.ttf)
+set_target_properties(context_assets PROPERTIES POSITION_INDEPENDENT_CODE ON FOLDER "assets")
+
+# ---------------------------------------------------------------------------
 # Shared source set: compiled into the plugin AND the tests.
 # ---------------------------------------------------------------------------
 include(plugin/Sources.cmake)
@@ -113,6 +126,7 @@ target_compile_definitions(context_shared INTERFACE
     CONTEXT_BUILD_CONFIG="$<CONFIG>")
 target_link_libraries(context_shared INTERFACE
     context_monocypher
+    context_assets
     juce::juce_audio_utils
     juce::juce_audio_formats
     juce::juce_dsp

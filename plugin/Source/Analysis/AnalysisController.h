@@ -27,6 +27,10 @@ public:
     std::optional<TrackAnalysis> getLatest() const;
     void clear();
 
+    /** Message thread: publish an analysis computed elsewhere (the captured 8-bar context),
+        so prompts and the analysis readout use it. */
+    void setExternalResult (const TrackAnalysis&);
+
     /** Generation worker: writes the most recent `seconds` of captured audio as a
         small mono 22.05 kHz 16-bit WAV for providers that accept audio context.
         Only called when the user explicitly enabled "Send Audio Context". */

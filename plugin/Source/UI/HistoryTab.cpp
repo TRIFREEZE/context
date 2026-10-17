@@ -13,16 +13,17 @@ public:
     {
         for (auto* b : { &star, &play, &use, &folder, &remove })
         {
-            styleQuiet (*b);
+            setStyle (*b, ButtonStyle::Ghost);
             addAndMakeVisible (*b);
         }
+        setStyle (use, ButtonStyle::Secondary);
         star.onClick   = [this] { owner.processor.services().history().setFavorite (item.generationId, ! item.favorite); };
         play.onClick   = [this] { owner.processor.previewResult (item); };
         use.onClick    = [this] { owner.processor.selectResult (item.generationId); if (owner.onUseResult) owner.onUseResult(); };
         folder.onClick = [this] { owner.processor.services().history().setPinned (item.generationId); item.localFile.revealToUser(); };
         remove.onClick = [this] { owner.removeEntry (item); };
         play.setTooltip ("Preview");
-        use.setTooltip ("Open in the Generate screen (regenerate / variation / drag)");
+        use.setTooltip ("Load into the AI / Sample lane (fit, process, audition, drag)");
         folder.setTooltip ("Show the file in Explorer");
         remove.setTooltip ("Remove from history");
         setMouseCursor (juce::MouseCursor::DraggingHandCursor);
@@ -42,18 +43,22 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        auto r = getLocalBounds().reduced (2, 2).toFloat();
-        g.setColour (isMouseOver (true) ? colours::raised : colours::panel);
-        g.fillRoundedRectangle (r, 6.0f);
+        if (isMouseOver (true))
+        {
+            g.setColour (colours::panel);
+            g.fillRect (getLocalBounds());
+        }
+        g.setColour (colours::line);
+        g.fillRect (0, getHeight() - 1, getWidth(), 1);
 
-        auto text = getLocalBounds().reduced (12, 6);
-        text.removeFromLeft (40);
-        text.removeFromRight (4 * 74 + 10);
+        auto text = getLocalBounds().reduced (12, 8);
+        text.removeFromLeft (34);
+        text.removeFromRight (4 * 66 + 10);
         g.setColour (item.localFile.existsAsFile() ? colours::text : colours::faint);
-        g.setFont (ContextLookAndFeel::font (14.0f, true));
-        g.drawText (item.prompt.isNotEmpty() ? item.prompt : item.localFile.getFileName(), text.removeFromTop (20), juce::Justification::centredLeft, true);
-        g.setColour (colours::dim);
-        g.setFont (ContextLookAndFeel::font (12.0f));
+        g.setFont (ui::font (13.0f, Weight::Medium));
+        g.drawText (item.prompt.isNotEmpty() ? item.prompt : item.localFile.getFileName(), text.removeFromTop (18), juce::Justification::centredLeft, true);
+        g.setColour (colours::faint);
+        g.setFont (ui::font (11.5f));
         juce::String meta = toLabel (item.type) + "  " + glyph ("\xc2\xb7") + "  " + juce::String (item.durationSeconds, 1) + " s  "
                           + glyph ("\xc2\xb7") + "  " + item.creationTimestamp.formatted ("%d %b %Y %H:%M");
         if (item.bpm) meta << "  " << glyph ("\xc2\xb7") << "  " << juce::roundToInt (*item.bpm) << " BPM";
@@ -65,11 +70,11 @@ public:
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (10, 12);
-        star.setBounds (r.removeFromLeft (32));
+        auto r = getLocalBounds().reduced (8, 0).withSizeKeepingCentre (getWidth() - 16, height::control);
+        star.setBounds (r.removeFromLeft (28));
         for (auto* b : { &remove, &folder, &use, &play })
         {
-            b->setBounds (r.removeFromRight (70));
+            b->setBounds (r.removeFromRight (62));
             r.removeFromRight (4);
         }
     }
@@ -90,14 +95,14 @@ private:
     HistoryTab& owner;
     GenerationResult item;
     bool dragging = false;
-    juce::TextButton star, play { glyph ("\xe2\x96\xb6") }, use { "Open" }, folder { "Folder" }, remove { "Remove" };
+    juce::TextButton star, play { "Preview" }, use { "Load" }, folder { "Folder" }, remove { "Remove" };
 };
 
 HistoryTab::HistoryTab (ContextAudioProcessor& p) : processor (p)
 {
     for (auto* b : { &recentButton, &favoritesButton, &allButton })
     {
-        styleQuiet (*b);
+        setStyle (*b, ButtonStyle::Toggle);
         addAndMakeVisible (*b);
     }
     recentButton.onClick    = [this] { filter = Filter::Recent; refresh(); };
@@ -105,7 +110,7 @@ HistoryTab::HistoryTab (ContextAudioProcessor& p) : processor (p)
     allButton.onClick       = [this] { filter = Filter::All; refresh(); };
 
     list.setModel (this);
-    list.setRowHeight (60);
+    list.setRowHeight (52);
     list.setColour (juce::ListBox::backgroundColourId, colours::background);
     list.setColour (juce::ListBox::outlineColourId, colours::background);
     addAndMakeVisible (list);
@@ -114,7 +119,7 @@ HistoryTab::HistoryTab (ContextAudioProcessor& p) : processor (p)
     emptyLabel.setColour (juce::Label::textColourId, colours::dim);
     addAndMakeVisible (emptyLabel);
     infoLabel.setColour (juce::Label::textColourId, colours::faint);
-    infoLabel.setFont (ContextLookAndFeel::font (12.0f));
+    infoLabel.setFont (ui::font (11.5f));
     infoLabel.setText ("Drag any row into your DAW. Favorites and sounds you dragged or exported are never removed by cache cleanup.",
                        juce::dontSendNotification);
     addAndMakeVisible (infoLabel);
@@ -195,14 +200,14 @@ void HistoryTab::paint (juce::Graphics& g)
 
 void HistoryTab::resized()
 {
-    auto r = getLocalBounds().reduced (14, 12);
-    auto top = r.removeFromTop (32);
+    auto r = getLocalBounds().reduced (space::l, space::m);
+    auto top = r.removeFromTop (height::control);
     for (auto* b : { &recentButton, &favoritesButton, &allButton })
     {
-        b->setBounds (top.removeFromLeft (110));
-        top.removeFromLeft (6);
+        b->setBounds (top.removeFromLeft (88));
+        top.removeFromLeft (4);
     }
-    r.removeFromTop (8);
+    r.removeFromTop (space::m);
     infoLabel.setBounds (r.removeFromBottom (20));
     list.setBounds (r);
     emptyLabel.setBounds (r);

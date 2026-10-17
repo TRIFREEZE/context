@@ -15,6 +15,25 @@ your DAW.
 * Context's own licensing (license keys, 2 devices, 7-day offline grace) runs on a
   small FastAPI server that you host.
 
+### New in V2 — the workspace
+
+* **TRACK CONTEXT lane** — capture exactly **8 bars** of your song, starting on a bar line
+  from the DAW's tempo and position; tempo and key show in the lane header.
+* **AI / SAMPLE lane** — the generated sound (or any WAV/AIFF/FLAC/MP3 you drop in) sits
+  under your track on the same bar ruler; both lanes play in sync (Both / Context / Output,
+  mute, solo, level, loop).
+* **BARS 2 / 4 / 6 / 8 / 16** — sets the generation length and fits the result to exactly
+  that many bars (sample-exact) with *Auto / Fit / Trim / Loop / Repitch* and five stretch
+  algorithms (Percussive, Monophonic, Polyphonic, Texture, Repitch).
+* **PROCESSING rack** — 20 built-in effects, reorderable, bypassable, with an inspector,
+  click-free parameter smoothing and Processed / Original A/B. Non-destructive.
+* **Drag to DAW** — drags exactly what you hear (fit + effects) as a 24-bit WAV, N bars long.
+* Everything is saved with the DAW project (settings and references only — no audio, no
+  credentials). Older projects load unchanged.
+
+See [ARCHITECTURE.md — Part II](ARCHITECTURE.md#part-ii--context-v2-workspace) and
+[docs/OPERATING_GUIDE.md](docs/OPERATING_GUIDE.md) sections R–U2.
+
 ---
 
 ## Contents
@@ -159,6 +178,10 @@ your bridge documents.
 To try the bridge path without any AI service, run the reference bridge:
 `scripts\run-reference-bridge.bat` (or `python tools/reference_bridge/reference_bridge.py --port 3000`).
 
+For real AI audio, run the **Kie.ai bridge**: `scripts\run-kie-bridge.bat` (your own Kie.ai API key,
+stored only in your Windows profile). See [docs/KIE_BRIDGE.md](docs/KIE_BRIDGE.md) — including why
+Kie.ai (a third-party Suno reseller) is fine for prototyping but uncertain for commercial use.
+
 Non-local bridges (another PC, LAN) are refused unless you tick **Allow non-local
 generation bridge** and confirm the warning.
 
@@ -194,7 +217,7 @@ python -m pytest backend/tests
 
 | Test | What it covers |
 |---|---|
-| `unit_tests` | ~800 checks: passthrough at 44.1/48/96 kHz and 16–4096-sample blocks, capture ring buffer (incl. concurrency), key/spectral/stereo/transient analysis, PromptBuilder, filename sanitiser, redaction, URL policy, JSON hardening, bridge profiles and adapter parsing, mock generation (cancel, timeout, failures, rapid clicks), history/cache rules, license tokens and offline grace, processor state, editor open/close, UI snapshots |
+| `unit_tests` | ~4,700 checks. V2: bar/sample maths (120 BPM 4/4: 4 bars = 8 s, 8 bars = 16 s, several sample rates), exact-bar capture termination, resampling, every fit mode and stretch algorithm, effect parameters/serialisation, chain reorder/bypass/latency, "every visible control changes the audio", two-lane sync, session state (old, missing and malformed fields). Original: passthrough at 44.1/48/96 kHz and 16–4096-sample blocks, capture ring buffer (incl. concurrency), key/spectral/stereo/transient analysis, PromptBuilder, filename sanitiser, redaction, URL policy, JSON hardening, bridge profiles and adapter parsing, mock generation (cancel, timeout, failures, rapid clicks), history/cache rules, license tokens and offline grace, processor state, editor open/close, UI snapshots |
 | `bridge_integration` | real HTTP against the reference bridge: connection statuses, generation, audio-context upload, Unicode prompts, cancel, and every failure mode (malformed/huge/deep JSON, bad/empty/150 MB WAV, expired URL, vanished job, bridge dying mid-request, non-local audio URL) |
 | `license_integration` | real FastAPI backend + the plugin's C++ license manager: activation, reload, device limit, deactivation, revocation, wrong public key, update check |
 | `vst3_host_load` | loads the **built Context.vst3** through JUCE's VST3 hosting like a DAW: scan, instantiate at 3 sample rates, bit-exact passthrough, state, editor, two instances |
@@ -207,20 +230,28 @@ CMakeLists.txt              product identity, pinned JUCE, targets
 dependencies/               JUCE_COMMIT / JUCE_VERSION (the pin)
 licensing/                  license_public_key.txt (public; compiled in)
 plugin/Source/
-  PluginProcessor.*         audio entry point (passthrough, capture, preview)
+  PluginProcessor.*         audio entry point (passthrough, capture, preview, V2 workspace engine)
   PluginEditor.*            window, header, tabs
   Analysis/                 TrackAnalyzer (key, bands, stereo, transients, tempo) + worker
-  Audio/                    CaptureBuffer (rolling buffer), PreviewPlayer
+  Audio/                    CaptureBuffer (rolling buffer), PreviewPlayer; V2: MusicalTime,
+                            AudioAsset, Resampler, ContextRecorder, PreviewEngine, TimeFit,
+                            TimeStretch/ (phase vocoder, WSOLA, transient slicing, repitch)
+  DSP/                      V2 effect system: parameters, processor base, registry, chain,
+                            Effects/ (20 built-in effects)
+  Session/                  V2 session state, controller, context cache
   Core/                     settings, shared services, paths, worker thread, build info
   Generation/               provider interface, Mock + Local Bridge providers, bridge
                             profiles/adapter, PromptBuilder, synth, job controller
   Licensing/                device ID, Ed25519 token verification, license manager
   Networking/               HTTP client, audio file validator
   Storage/                  logger, history, cache manager
-  UI/                       theme, Generate / History / Settings tabs, onboarding, waveform
+  UI/                       design system (Theme, Controls), Workspace (prompt, lanes, fit,
+                            effect rack, transport), History / Settings tabs, onboarding
+plugin/Resources/fonts/     Inter (SIL OFL 1.1), embedded in the plugin
   Utils/                    sanitiser, redaction, URL safety, JSON safety, atomic files
 backend/                    FastAPI licensing server, admin CLI, tests
 tools/reference_bridge/     test bridge implementing the Context Bridge Protocol
+tools/kie_bridge/           Kie.ai Suno API bridge (real generation) + fake Kie.ai server for tests
 tests/                      C++ unit tests, integration drivers, VST3 host test
 scripts/                    build / server / bridge helper scripts
 docs/                       protocol, profiles, operating guide, QA report

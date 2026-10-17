@@ -2,6 +2,7 @@
 //   ContextTests --unit                         run all unit tests
 //   ContextTests --category=Prompt              run one category
 //   ContextTests --integration=<bridgeUrl>      run bridge integration tests against a live bridge
+//   ContextTests --bridge-e2e=<bridgeUrl>       generate through an external bridge (Kie.ai bridge test)
 #include <juce_core/juce_core.h>
 #include <cstdio>
 #include <juce_events/juce_events.h>
@@ -37,6 +38,11 @@ int main (int argc, char* argv[])
                 context::test::integrationUrls().set (juce::String (opt).substring (2), args.getValueForOption (opt));
         runner.runTestsInCategory ("Integration");
     }
+    else if (args.containsOption ("--bridge-e2e"))
+    {
+        context::test::integrationBridgeUrl() = args.getValueForOption ("--bridge-e2e");
+        runner.runTestsInCategory ("BridgeE2E");
+    }
     else if (args.containsOption ("--product-e2e"))
     {
         for (auto opt : { "--license-server", "--license-key" })
@@ -60,7 +66,8 @@ int main (int argc, char* argv[])
     {
         juce::Array<juce::UnitTest*> tests;
         for (auto* t : juce::UnitTest::getAllTests())
-            if (t->getCategory() != "Integration" && t->getCategory() != "LicenseIntegration" && t->getCategory() != "ProductE2E")
+            if (t->getCategory() != "Integration" && t->getCategory() != "LicenseIntegration" && t->getCategory() != "ProductE2E"
+                && t->getCategory() != "BridgeE2E" && t->getCategory() != "Screens")
                 tests.add (t);
         runner.runTests (tests);
     }

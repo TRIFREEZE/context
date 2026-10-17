@@ -102,3 +102,28 @@ device-ID registry read.
 * Keyboard focus behaviour in FL Studio's plugin wrapper.
 * High-DPI scaling on Windows.
 * Real third-party bridge connectivity (no third-party bridge API is assumed or included).
+
+---
+
+## V2 workspace — verification (October 2026)
+
+Run on Linux x64 (GCC, Ninja, Release, JUCE 8.0.12) — **not** on Windows:
+
+| Check | Result |
+|---|---|
+| Full build (plugin VST3 + Standalone + tests), `-Wall -Wextra` | builds, 0 warnings in V2 sources |
+| `ctest` — `unit_tests`, `bridge_integration`, `kie_bridge_e2e`, `license_integration`, `vst3_host_load` | 5/5 passed |
+| `ContextTests --unit` | 4,751 checks, 0 failures |
+| Bar maths: 120 BPM 4/4 → 4 bars = 8.000 s, 8 bars = 16.000 s; sample counts at 44.1/48/88.2/96 kHz | pass |
+| Capture: stops at exactly 8 bars, bar-line start inside a block, fails on stop / tempo change / cancel | pass |
+| Fitting: every mode × algorithm returns exactly the target length, stereo, finite | pass |
+| Effects: all 20 at 44.1/48/96 kHz, odd block sizes; every visible control changes the output | pass |
+| Chain: reorder changes the signal, bypass click-free, constant latency, state round trip, junk tolerated | pass |
+| Session state: v1 project (no V2 fields), missing fields, malformed JSON, relative paths | pass |
+| Processor level (through `processBlock`): 8-bar capture → analyse → cache, import + fit, two-lane playback, export exact-length and reflects effects, host-tempo change flagged + retarget, project save/reopen | pass |
+| UI screenshots at 980 / 1120 / 1600 px (empty, armed, loaded, EQ, delay, history, settings) | reviewed |
+
+**Not verified for V2** (needs Windows / FL Studio): everything in the "Not verified" list above,
+plus capture against FL Studio's real transport and tempo reporting, MP3 import through
+Windows Media components, drag-to-DAW of the processed file into FL Studio's playlist, and
+sample-rate changes inside FL Studio. Use the checklist in `docs/OPERATING_GUIDE.md` §U2.

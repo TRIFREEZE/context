@@ -45,6 +45,31 @@ ContextAudioProcessor::ContextAudioProcessor()
     previewPlayer.setGainDb (s.previewGainDb);
     rebuildProvider (true);
 
+    // V2 workspace: context capture, fit, effects, two-lane preview, processed export.
+    SessionController::Dependencies sd;
+    sd.recorder = &contextRecorder;
+    sd.engine = &previewEngine;
+    sd.chain = &effectChain;
+    sd.analysis = analysisController.get();
+    sd.host = [this]
+    {
+        SessionController::HostSnapshot h;
+        h.sampleRate = currentSampleRate.load();
+        const double b = hostBpm.load();
+        if (b > 0.0) h.bpm = b;
+        h.signature = { hostTsNum.load(), hostTsDen.load() };
+        h.playing = hostPlaying.load();
+        return h;
+    };
+    sd.findGenerated = [this] (const juce::String& id) { return shared->history().find (id); };
+    sd.contextCacheFolder = [] { return AppPaths::contextCacheDir(); };
+    sd.exportFolder = [this] { return shared->generatedFolder().getChildFile ("Processed"); };
+    sd.stagingFolder = [this] { return shared->tempFolder(); };
+    sd.productName = build::productName;
+    sessionController = std::make_unique<SessionController> (sd);
+    effectChain.onChanged = [this] { if (sessionController != nullptr) sessionController->processingChanged(); };
+    previewEngine.setMasterGainDb (s.previewGainDb + 6.0f);   // lanes at unity; Settings' preview level applies (default -6 dB -> 0 dB offset)
+
     shared->settings().addChangeListener (this);
     generationController->addChangeListener (this);
     startTimer (1000);
@@ -58,6 +83,8 @@ ContextAudioProcessor::~ContextAudioProcessor()
     generationController->removeChangeListener (this);
 
     // Order matters: stop workers (cancelling in-flight HTTP) before the things they use go away.
+    effectChain.onChanged = nullptr;
+    sessionController.reset();
     generationController.reset();
     analysisController.reset();
     previewWorker.reset();
@@ -76,6 +103,12 @@ void ContextAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBloc
     capturedSecondsSetting = shared->settings().get().captureSeconds;
     captureBuffer.prepare (sampleRate, capturedSecondsSetting);
     previewPlayer.setHostSampleRate (sampleRate);
+    // The audio thread is not running here: safe to (re)allocate realtime state.
+    contextRecorder.resetNonRealtime();
+    previewEngine.prepare (sampleRate, samplesPerBlock);
+    effectChain.prepare (sampleRate, samplesPerBlock);
+    // Plugin latency stays 0: effect latency is compensated inside the preview engine,
+    // and the DAW signal passes through untouched.
     setLatencySamples (0);
 }
 
@@ -99,6 +132,7 @@ void ContextAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         buffer.clear (ch, 0, numSamples);
 
     // Host transport info (never assume BPM exists).
+    ContextRecorder::HostPosition hostPos;
     if (auto* playHead = getPlayHead())
     {
         if (const auto pos = playHead->getPosition())
@@ -106,22 +140,39 @@ void ContextAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
             const auto bpm = pos->getBpm();
             hostBpm.store (bpm.hasValue() && *bpm > 0.0 ? *bpm : 0.0, std::memory_order_relaxed);
             hostPlaying.store (pos->getIsPlaying(), std::memory_order_relaxed);
+            hostPlayingKnown.store (true, std::memory_order_relaxed);
+            hostPos.playing = pos->getIsPlaying();
+            hostPos.playingKnown = true;
+            if (bpm.hasValue() && *bpm > 0.0)
+                hostPos.bpm = *bpm;
             if (const auto ppq = pos->getPpqPosition())
+            {
                 hostPpq.store (*ppq, std::memory_order_relaxed);
+                hostPos.ppq = *ppq;
+            }
+            if (const auto lastBar = pos->getPpqPositionOfLastBarStart())
+                hostPos.lastBarStartPpq = *lastBar;
             if (const auto ts = pos->getTimeSignature())
             {
                 hostTsNum.store (ts->numerator, std::memory_order_relaxed);
                 hostTsDen.store (ts->denominator, std::memory_order_relaxed);
+                hostPos.signature = { ts->numerator, ts->denominator };
             }
         }
     }
 
     // Capture the incoming (pre-preview) audio: lock-free try, never waits.
     if (numIn > 0)
-        captureBuffer.push (buffer.getArrayOfReadPointers(), juce::jmin (numIn, buffer.getNumChannels()), numSamples);
+    {
+        const int chans = juce::jmin (numIn, buffer.getNumChannels());
+        captureBuffer.push (buffer.getArrayOfReadPointers(), chans, numSamples);
+        contextRecorder.process (buffer.getArrayOfReadPointers(), chans, numSamples, hostPos);
+    }
 
-    // Audition the generated sound (only while the user pressed Play; never in offline renders).
+    // Audition (only while the user pressed Play; never in offline renders):
+    // the single-file preview, and the two-lane workspace with its effect rack.
     previewPlayer.renderAdd (buffer, numSamples, isNonRealtime());
+    previewEngine.renderAdd (buffer, numSamples, isNonRealtime(), effectChain);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +190,13 @@ void ContextAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     tree.setProperty ("sendAudioContext", s.sendAudioContext, nullptr);
     tree.setProperty ("tab", s.tab, nullptr);
     tree.setProperty ("selectedResultId", s.selectedResultId, nullptr);
+    // V2 workspace: settings + references only (captured/generated audio stays in files).
+    if (sessionController != nullptr)
+    {
+        tree.setProperty ("version", 2, nullptr);
+        tree.setProperty ("session", juce::JSON::toString (sessionController->getState().toVar(), true), nullptr);
+        tree.setProperty ("chain", juce::JSON::toString (effectChain.toVar(), true), nullptr);
+    }
     // Deliberately NOT stored here: credentials, license data, audio, history.
     if (auto xml = tree.createXml())
         copyXmlToBinary (*xml, destData);
@@ -163,6 +221,30 @@ void ContextAudioProcessor::setStateInformation (const void* data, int sizeInByt
     s.tab = tree.getProperty ("tab", "generate").toString().substring (0, 16);
     s.selectedResultId = tree.getProperty ("selectedResultId").toString().substring (0, 64);
     setUiState (s);
+
+    // V2 fields are optional: projects saved by older versions simply don't have them.
+    const auto sessionJson = tree.getProperty ("session").toString();
+    const auto chainJson = tree.getProperty ("chain").toString();
+    if (sessionJson.isNotEmpty() || chainJson.isNotEmpty())
+        restoreSession (juce::JSON::parse (sessionJson), juce::JSON::parse (chainJson));
+}
+
+void ContextAudioProcessor::restoreSession (const juce::var& sessionVar, const juce::var& chainVar)
+{
+    auto apply = [sessionVar, chainVar] (ContextAudioProcessor& p)
+    {
+        if (p.sessionController != nullptr)
+            p.sessionController->restore (SessionState::fromVar (sessionVar), chainVar);
+    };
+    // Hosts may restore state from any thread; the session lives on the message thread.
+    if (juce::MessageManager::existsAndIsCurrentThread())
+        apply (*this);
+    else
+        juce::MessageManager::callAsync ([weak = juce::WeakReference<ContextAudioProcessor> (this), apply]
+        {
+            if (auto* p = weak.get())
+                apply (*p);
+        });
 }
 
 ContextAudioProcessor::UiState ContextAudioProcessor::getUiState() const
@@ -189,6 +271,7 @@ ContextAudioProcessor::HostInfo ContextAudioProcessor::getHostInfo() const
     h.ppq = hostPpq.load();
     h.tsNum = hostTsNum.load();
     h.tsDen = hostTsDen.load();
+    h.sampleRate = currentSampleRate.load();
     return h;
 }
 
@@ -258,6 +341,7 @@ void ContextAudioProcessor::changeListenerCallback (juce::ChangeBroadcaster* sou
         rebuildProvider();
         generationController->setGenerationTimeoutSeconds (s.generationTimeoutSeconds);
         previewPlayer.setGainDb (s.previewGainDb);
+        previewEngine.setMasterGainDb (s.previewGainDb + 6.0f);
         shared->applyLogLevel();
         if (s.captureSeconds != capturedSecondsSetting && currentSampleRate.load() > 0)
         {
@@ -267,13 +351,23 @@ void ContextAudioProcessor::changeListenerCallback (juce::ChangeBroadcaster* sou
     }
     else if (source == generationController.get())
     {
-        // When a job completes, make its result the selected one (also when the editor is closed).
+        // When a job completes, make its result the selected one (also when the editor is closed)
+        // and load it into the workspace's output lane.
         if (const auto last = generationController->getLastResult())
         {
-            const juce::ScopedLock sl (uiLock);
-            if (ui.selectedResultId != last->generationId && generationController->getCurrentJob().state == JobState::Complete
-                && generationController->getCurrentJob().localJobId == last->generationId)
-                ui.selectedResultId = last->generationId;
+            bool fresh = false;
+            {
+                const juce::ScopedLock sl (uiLock);
+                if (generationController->getCurrentJob().state == JobState::Complete
+                    && generationController->getCurrentJob().localJobId == last->generationId)
+                {
+                    ui.selectedResultId = last->generationId;
+                    fresh = lastAutoLoadedResult != last->generationId;
+                    lastAutoLoadedResult = last->generationId;
+                }
+            }
+            if (fresh && sessionController != nullptr)
+                sessionController->loadGenerated (*last);
         }
         stateChanged.sendChangeMessage();
     }
@@ -322,6 +416,19 @@ GenerationRequest ContextAudioProcessor::makeRequest (const UiState& s) const
     r.seed = (juce::int64) juce::Random::getSystemRandom().nextInt (0x7fffffff);
     if (s.useTrackContext)
         r.contextAnalysis = analysisController->getLatest();
+
+    // Ask for the selected bar length (one-shots and FX stay short; the fit renderer
+    // places them on bar 1). Providers that can't honour durations still get fitted.
+    if (sessionController != nullptr && s.type != GenerationType::OneShot && s.type != GenerationType::FX)
+    {
+        const auto tempo = sessionController->sessionTempo();
+        const double seconds = musical::secondsForBars (sessionController->getState().lengthBars, tempo);
+        const int maxSeconds = generationController->getCapabilities().maxDurationSeconds;
+        if (seconds > 0.0)
+            r.durationSeconds = juce::jmin (seconds, (double) juce::jmax (1, maxSeconds));
+        if (! r.bpm.has_value())
+            r.bpm = tempo.bpm;
+    }
 
     const bool consent = shared->settings().get().allowSendAudioContext;
     if (s.sendAudioContext && consent && generationController->getCapabilities().has (Feature::AudioConditioning))
@@ -401,6 +508,9 @@ void ContextAudioProcessor::selectResult (const juce::String& id)
         const juce::ScopedLock sl (uiLock);
         ui.selectedResultId = id;
     }
+    if (sessionController != nullptr)
+        if (auto r = shared->history().find (id))
+            sessionController->loadGenerated (*r);
     stateChanged.sendChangeMessage();
 }
 
@@ -413,6 +523,8 @@ juce::String ContextAudioProcessor::getPreviewError() const
 void ContextAudioProcessor::previewResult (const GenerationResult& r)
 {
     shared->history().touch (r.generationId);
+    if (sessionController != nullptr)
+        sessionController->stop();   // one audition at a time
     if (previewPlayer.loadedFile() == r.localFile && previewPlayer.lengthSeconds() > 0)
     {
         previewPlayer.play();
@@ -459,6 +571,9 @@ juce::String ContextAudioProcessor::diagnosticsText() const
       << "License: " << LicenseManager::toString (shared->license().getStatus()) << " " << shared->license().getMaskedKey() << "\n"
       << "Captured audio: " << juce::String (captureBuffer.capturedSeconds(), 1) << " s of " << juce::String (captureBuffer.capacitySeconds(), 0) << " s\n"
       << "History entries: " << shared->history().size() << "\n"
+      << "Workspace: tempo " << (sessionController != nullptr ? juce::String (sessionController->sessionTempo().bpm, 2) : juce::String ("-")) << " BPM, "
+      << (sessionController != nullptr && sessionController->hasContext() ? "context captured" : "no context") << ", "
+      << effectChain.size() << " effect(s), chain latency " << effectChain.latencySamples() << " samples\n"
       << "Recent error codes: " << log.recentErrorCodes().joinIntoString (", ") << "\n"
       << "Log file: " << log.currentLogFile().getFullPathName() << "\n";
     // Log lines are redacted when written; the header is redacted here.

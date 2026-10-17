@@ -92,6 +92,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements-dev.txt
+          python -m pip install -r tools/kie_bridge/requirements.txt
           python -m pytest backend/tests -q
 
       - name: Plugin unit + bridge integration tests
@@ -125,6 +126,8 @@ jobs:
           # Copy the whole bundle directory so its internal structure is preserved.
           Copy-Item -Recurse -Path "${{ steps.locate.outputs.bundle }}" -Destination "artifact/${{ env.PRODUCT_NAME }}.vst3"
           Copy-Item docs/INSTALL-WINDOWS.txt artifact/INSTALL.txt
+          Copy-Item THIRD_PARTY_NOTICES.md artifact/THIRD_PARTY_NOTICES.md
+          Copy-Item plugin/Resources/fonts/Inter-OFL-LICENSE.txt artifact/Inter-OFL-LICENSE.txt
           Get-ChildItem -Recurse artifact | ForEach-Object { Write-Host $_.FullName.Replace("$PWD\", "") }
           Compress-Archive -Path "artifact/*" -DestinationPath "${{ env.PRODUCT_NAME }}-Windows-VST3.zip" -Force
 

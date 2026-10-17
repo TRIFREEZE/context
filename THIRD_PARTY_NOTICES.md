@@ -10,8 +10,17 @@
 | SheenBidi (bundled in JUCE) | 2.9.0 | bidirectional text | Apache-2.0 |
 | zlib (bundled in JUCE) | as shipped in JUCE | compression | zlib |
 | libpng / jpeglib (bundled in JUCE) | as shipped in JUCE | image formats | zlib / IJG |
-| FLAC, Ogg Vorbis (bundled in JUCE) | as shipped in JUCE | audio codecs (JUCE defaults; Context validates WAV/AIFF only) | BSD |
+| FLAC, Ogg Vorbis (bundled in JUCE) | as shipped in JUCE | audio codecs: generated results are validated as WAV/AIFF; V2 sample import also reads FLAC/OGG | BSD |
+| Inter typeface (Regular, Medium, SemiBold) | 4.0 (`plugin/Resources/fonts`) | UI font, embedded as binary data | SIL Open Font License 1.1 — `plugin/Resources/fonts/Inter-OFL-LICENSE.txt` (shipped next to the plugin as `Inter-OFL-LICENSE.txt`) |
 | Monocypher (+ optional Ed25519) | 4.0.2 (`third_party/monocypher`) | verify license-token signatures | BSD-2-Clause **or** CC0-1.0 |
+
+Used from the operating system, not distributed: MP3 decoding for V2 sample import goes through
+JUCE's `WindowsMediaAudioFormat` (Windows Media components that ship with Windows; absent on
+"N" editions without the Media Feature Pack) and Core Audio on macOS. JUCE's own MP3 decoder
+(`JUCE_USE_MP3AUDIOFORMAT`) is **not** enabled.
+
+All V2 DSP (time-stretch engines, resampler, 20 effects) is original code in this repository —
+no Rubber Band, SoundTouch or other third-party DSP library.
 
 Not compiled in: the ASIO SDK (GPLv3/proprietary; `JUCE_ASIO=0`), the AAX SDK,
 AudioUnit SDK, LV2/VST2/AU hosting.

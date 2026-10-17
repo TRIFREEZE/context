@@ -2,7 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "UI/Theme.h"
-#include "UI/GenerateTab.h"
+#include "UI/Workspace.h"
 #include "UI/HistoryTab.h"
 #include "UI/SettingsTab.h"
 #include "UI/Onboarding.h"
@@ -37,14 +37,15 @@ private:
     ui::ContextLookAndFeel lookAndFeel;          // declared first: outlives all children
     juce::TooltipWindow tooltips { this, 600 };
 
-    juce::TextButton generateTabButton { "Generate" }, historyTabButton { "History" }, settingsTabButton { "Settings" };
-    ui::GenerateTab generateTab;
+    juce::TextButton generateTabButton { "Create" }, historyTabButton { "History" }, settingsTabButton { "Settings" };
+    ui::Workspace workspace;
     ui::HistoryTab historyTab;
     ui::SettingsTab settingsTab;
     std::unique_ptr<ui::Onboarding> onboarding;
 
     juce::String currentTab = "generate";
     juce::Rectangle<int> statusPill, licenseChip;
+    juce::String lastStatusText;
     int ticks = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ContextAudioProcessorEditor)

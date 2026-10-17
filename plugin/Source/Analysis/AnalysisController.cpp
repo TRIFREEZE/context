@@ -94,6 +94,18 @@ void AnalysisController::clear()
     sendChangeMessage();
 }
 
+void AnalysisController::setExternalResult (const TrackAnalysis& result)
+{
+    {
+        const juce::ScopedLock sl (lock);
+        if (state != State::Analyzing)
+            state = State::Done;
+        message = {};
+        latest = result;
+    }
+    sendChangeMessage();
+}
+
 std::optional<AudioConditioningPayload> AnalysisController::writeAudioContext (const juce::File& file, double seconds) const
 {
     const auto snap = capture.snapshot();

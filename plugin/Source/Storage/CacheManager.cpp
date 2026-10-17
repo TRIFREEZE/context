@@ -125,7 +125,7 @@ int CacheManager::cleanTemp (const juce::File& temp, juce::RelativeTime maxAge)
         return 0;
     int n = 0;
     const auto cutoff = juce::Time::getCurrentTime() - maxAge;
-    for (const auto& f : temp.findChildFiles (juce::File::findFiles, false, "*.part;*-context.wav"))
+    for (const auto& f : temp.findChildFiles (juce::File::findFiles, false, "*.part;*-context.wav;context-staged-*.wav"))
         if (f.getLastModificationTime() < cutoff && f.getParentDirectory() == temp && f.deleteFile())
             ++n;
     return n;

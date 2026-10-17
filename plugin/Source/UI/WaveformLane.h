@@ -1,0 +1,103 @@
+#pragma once
+
+#include "Theme.h"
+#include "Audio/AudioAsset.h"
+#include "Audio/MusicalTime.h"
+
+namespace context::ui
+{
+/** The musical timeline shared by both lanes and the ruler: one sample-accurate
+    mapping between timeline samples, bars and pixels. */
+struct TimelineView
+{
+    juce::int64 lengthSamples = 0;     // timeline length (longest lane, or the selected length)
+    double sampleRate = 48000.0;
+    musical::Tempo tempo;
+
+    double samplesPerBar() const       { return musical::samplesPerBar (tempo, sampleRate); }
+    double bars() const                { const double s = samplesPerBar(); return s > 0.0 ? (double) lengthSamples / s : 0.0; }
+    float xForSample (double sample, juce::Rectangle<float> area) const
+    {
+        return lengthSamples > 0 ? area.getX() + (float) (sample / (double) lengthSamples) * area.getWidth() : area.getX();
+    }
+    bool operator== (const TimelineView& o) const { return lengthSamples == o.lengthSamples && sampleRate == o.sampleRate && tempo == o.tempo; }
+};
+
+/** Bar numbers above the lanes. */
+class TimelineRuler : public juce::Component
+{
+public:
+    void setTimeline (const TimelineView&);
+    void setPlayhead (juce::int64 samples, bool visible);
+    void paint (juce::Graphics&) override;
+
+private:
+    TimelineView view;
+    juce::int64 playhead = 0;
+    bool showPlayhead = false;
+};
+
+/** One waveform lane: cached waveform image on the shared bar grid, playhead, and the
+    empty / loading / missing / drop-target states. The output lane is also the drag
+    source for drag-to-DAW and accepts audio files dropped from Explorer/Finder/DAWs. */
+class WaveformLane : public juce::Component,
+                     public juce::FileDragAndDropTarget,
+                     public juce::SettableTooltipClient
+{
+public:
+    explicit WaveformLane (juce::Colour waveColour, bool acceptsDrops);
+
+    void setTimeline (const TimelineView&);
+    void setPeaks (WaveformPeaks::Ptr, juce::int64 laneLength);
+    void setPlayhead (juce::int64 samples, bool visible);
+    void setEmptyText (const juce::String& primary, const juce::String& secondary = {});
+    void setBusy (bool busy, const juce::String& text = {}, double progress = -1.0);
+    void setMissing (const juce::String& message);
+    void setCaptureProgress (double progress, bool active);   // context lane while recording
+
+    /** Return the file to drag to the DAW (rendered on demand); empty = no drag. */
+    std::function<juce::File()> onDragOut;
+    std::function<void (const juce::File&)> onFileDropped;
+    std::function<void (const juce::MouseEvent&)> onRightClick;
+    std::function<void()> onClick;
+
+    bool hasAudio() const { return peaks != nullptr; }
+
+    void paint (juce::Graphics&) override;
+    void resized() override { invalidate(); }
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void fileDragEnter (const juce::StringArray&, int, int) override;
+    void fileDragExit (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray& files, int, int) override;
+
+    static bool looksLikeAudio (const juce::String& path);
+
+private:
+    void invalidate() { cacheValid = false; repaint(); }
+    void renderCache();
+    juce::Rectangle<float> waveArea() const;
+
+    juce::Colour colour;
+    bool dropTarget;
+    TimelineView view;
+    WaveformPeaks::Ptr peaks;
+    juce::int64 laneLength = 0;
+    juce::int64 playhead = 0;
+    bool showPlayhead = false;
+    juce::String emptyPrimary, emptySecondary, busyText, missingText;
+    bool busy = false;
+    double busyProgress = -1.0;
+    double captureProgress = 0.0;
+    bool capturing = false;
+    bool dragHover = false, dragging = false;
+
+    juce::Image cache;
+    bool cacheValid = false;
+};
+} // namespace context::ui

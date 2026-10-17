@@ -19,6 +19,7 @@ struct AppPaths
     static juce::File logsDir()             { return root().getChildFile ("Logs"); }
     static juce::File tempDir()             { return root().getChildFile ("Temp"); }
     static juce::File defaultGeneratedDir() { return root().getChildFile ("Generated"); }
+    static juce::File contextCacheDir()     { return root().getChildFile ("ContextCache"); }
 
     /** Test hook: redirect everything to another folder. Call before any service starts. */
     static void setRootOverride (const juce::File& dir);

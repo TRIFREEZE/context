@@ -5,21 +5,20 @@
 namespace context
 {
 ContextAudioProcessorEditor::ContextAudioProcessorEditor (ContextAudioProcessor& p)
-    : juce::AudioProcessorEditor (p), processor (p), generateTab (p), historyTab (p), settingsTab (p)
+    : juce::AudioProcessorEditor (p), processor (p), workspace (p), historyTab (p), settingsTab (p)
 {
     setLookAndFeel (&lookAndFeel);
 
     for (auto* b : { &generateTabButton, &historyTabButton, &settingsTabButton })
     {
-        ui::styleQuiet (*b);
-        b->setColour (juce::TextButton::buttonColourId, ui::colours::background);
+        ui::setStyle (*b, ui::ButtonStyle::Tab);
         addAndMakeVisible (*b);
     }
     generateTabButton.onClick = [this] { showTab ("generate"); };
     historyTabButton.onClick  = [this] { showTab ("history"); };
     settingsTabButton.onClick = [this] { showTab ("settings"); };
 
-    addChildComponent (generateTab);
+    addChildComponent (workspace);
     addChildComponent (historyTab);
     addChildComponent (settingsTab);
     historyTab.onUseResult = [this] { showTab ("generate"); };
@@ -48,11 +47,11 @@ ContextAudioProcessorEditor::ContextAudioProcessorEditor (ContextAudioProcessor&
     }
 
     setResizable (true, true);
-    setResizeLimits (800, 640, 1600, 1100);
-    setSize (920, 720);
+    setResizeLimits (980, 700, 2200, 1500);
+    setSize (1120, 800);
 
     showTab (processor.getUiState().tab);
-    startTimerHz (20);
+    startTimerHz (30);
 }
 
 ContextAudioProcessorEditor::~ContextAudioProcessorEditor()
@@ -91,7 +90,7 @@ void ContextAudioProcessorEditor::openOnboarding()
 void ContextAudioProcessorEditor::showTab (const juce::String& id)
 {
     currentTab = (id == "history" || id == "settings") ? id : "generate";
-    generateTab.setVisible (currentTab == "generate");
+    workspace.setVisible (currentTab == "generate");
     historyTab.setVisible (currentTab == "history");
     settingsTab.setVisible (currentTab == "settings");
     generateTabButton.setToggleState (currentTab == "generate", juce::dontSendNotification);
@@ -106,16 +105,16 @@ void ContextAudioProcessorEditor::showTab (const juce::String& id)
     }
     refreshAll();
     if (currentTab == "generate")
-        generateTab.focusPrompt();
+        workspace.focusPrompt();
 }
 
 void ContextAudioProcessorEditor::refreshAll()
 {
-    if (currentTab == "generate") generateTab.refresh();
+    if (currentTab == "generate") workspace.refresh();
     if (currentTab == "history")  historyTab.refresh();
     if (currentTab == "settings") settingsTab.refresh();
     if (onboarding != nullptr)    onboarding->refresh();
-    repaint (0, 0, getWidth(), 56);
+    repaint (0, 0, getWidth(), ui::height::topBar);
 }
 
 void ContextAudioProcessorEditor::changeListenerCallback (juce::ChangeBroadcaster*)
@@ -126,9 +125,9 @@ void ContextAudioProcessorEditor::changeListenerCallback (juce::ChangeBroadcaste
 void ContextAudioProcessorEditor::timerCallback()
 {
     if (currentTab == "generate")
-        generateTab.tick();
-    if (++ticks % 10 == 0)
-        repaint (0, 0, getWidth(), 56);   // status pill
+        workspace.tick();
+    if (++ticks % 15 == 0)
+        repaint (0, 0, getWidth(), ui::height::topBar);   // connection / license status
 }
 
 void ContextAudioProcessorEditor::mouseUp (const juce::MouseEvent& e)
@@ -142,64 +141,77 @@ void ContextAudioProcessorEditor::paint (juce::Graphics& g)
     using namespace ui;
     g.fillAll (colours::background);
 
-    auto header = getLocalBounds().removeFromTop (56);
+    auto header = getLocalBounds().removeFromTop (height::topBar);
     g.setColour (colours::panel);
     g.fillRect (header);
-    g.setColour (colours::border);
-    g.drawHorizontalLine (header.getBottom() - 1, 0.0f, (float) getWidth());
+    paintSeparator (g, header.getBottom() - 1, 0, getWidth());
 
     // Wordmark
     g.setColour (colours::text);
-    g.setFont (ContextLookAndFeel::font (20.0f, true).withExtraKerningFactor (0.22f));
-    g.drawText (juce::String (build::productName).toUpperCase(), header.withTrimmedLeft (20).withWidth (170), juce::Justification::centredLeft);
+    g.setFont (ui::font (13.0f, Weight::SemiBold).withExtraKerningFactor (0.32f));
+    g.drawText (juce::String (build::productName).toUpperCase(), header.withTrimmedLeft (space::l).withWidth (120), juce::Justification::centredLeft);
 
-    // Provider status pill
+    // Active tab underline
+    for (auto* b : { &generateTabButton, &historyTabButton, &settingsTabButton })
+        if (b->getToggleState())
+        {
+            g.setColour (colours::accent);
+            g.fillRect (b->getX() + 10, header.getBottom() - 2, b->getWidth() - 20, 2);
+        }
+
+    // Provider status: dot + text, quiet unless something is wrong.
     const auto conn = processor.generation().getConnectionResult();
     const bool mock = processor.services().settings().get().providerId == "mock";
-    juce::Colour dot = colours::dim;
+    juce::Colour dot = colours::faint;
     juce::String text;
     switch (conn.status)
     {
-        case ConnectionStatus::Connected:  dot = colours::good; text = "Bridge: Connected"; break;
-        case ConnectionStatus::MockReady:  dot = colours::warn; text = "Mock Provider (test)"; break;
-        case ConnectionStatus::Testing:    dot = colours::dim;  text = mock ? "Mock Provider" : "Bridge: Testing..."; break;
-        case ConnectionStatus::Unknown:    dot = colours::dim;  text = mock ? "Mock Provider" : "Bridge: Not tested"; break;
+        case ConnectionStatus::Connected:  dot = colours::good; text = conn.bridgeName.isNotEmpty() ? conn.bridgeName : "Bridge connected"; break;
+        case ConnectionStatus::MockReady:  dot = colours::warn; text = "Mock provider (test sounds)"; break;
+        case ConnectionStatus::Testing:    dot = colours::faint; text = mock ? "Mock provider" : "Connecting..."; break;
+        case ConnectionStatus::Unknown:    dot = colours::faint; text = mock ? "Mock provider" : "Bridge not tested"; break;
         case ConnectionStatus::ConnectionRefused:
-        case ConnectionStatus::Disconnected: dot = colours::bad; text = "Bridge: Offline"; break;
+        case ConnectionStatus::Disconnected: dot = colours::bad; text = "Bridge offline"; break;
         default:                           dot = colours::bad;  text = "Bridge: " + toDisplayString (conn.status); break;
     }
-    g.setFont (ContextLookAndFeel::font (13.0f, true));
-    const int pillW = juce::jmin (280, juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), text) + 38);
-    statusPill = juce::Rectangle<int> (getWidth() - pillW - 16, header.getCentreY() - 14, pillW, 28);
-    g.setColour (colours::raised);
-    g.fillRoundedRectangle (statusPill.toFloat(), 14.0f);
+    const auto f = ui::font (11.5f, Weight::Medium);
+    const int textW = juce::jmin (260, juce::GlyphArrangement::getStringWidthInt (f, text));
+    statusPill = juce::Rectangle<int> (getWidth() - space::l - textW - 18, header.getY(), textW + 18, header.getHeight());
     g.setColour (dot);
-    g.fillEllipse ((float) statusPill.getX() + 12.0f, (float) statusPill.getCentreY() - 4.0f, 8.0f, 8.0f);
-    g.setColour (colours::text);
-    g.drawText (text, statusPill.withTrimmedLeft (28).withTrimmedRight (10), juce::Justification::centredLeft, true);
+    g.fillEllipse ((float) statusPill.getX(), (float) statusPill.getCentreY() - 3.5f, 7.0f, 7.0f);
+    g.setColour (conn.ok() || conn.status == ConnectionStatus::Testing ? colours::dim : colours::text);
+    g.setFont (f);
+    g.drawText (text, statusPill.withTrimmedLeft (14), juce::Justification::centredLeft, true);
 
-    // License chip
+    // License: only shown when it needs attention.
     const bool licensed = processor.isLicensed();
-    const auto chipText = licensed ? juce::String ("Licensed") : LicenseManager::toString (processor.services().license().getStatus());
-    const int chipW = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), chipText) + 24;
-    licenseChip = juce::Rectangle<int> (statusPill.getX() - chipW - 8, statusPill.getY(), chipW, 28);
-    g.setColour (licensed ? colours::raised : colours::warn.withAlpha (0.15f));
-    g.fillRoundedRectangle (licenseChip.toFloat(), 14.0f);
-    g.setColour (licensed ? colours::dim : colours::warn);
-    g.drawText (chipText, licenseChip, juce::Justification::centred);
+    if (! licensed)
+    {
+        const auto chipText = LicenseManager::toString (processor.services().license().getStatus());
+        const int chipW = juce::GlyphArrangement::getStringWidthInt (f, chipText) + 20;
+        licenseChip = juce::Rectangle<int> (statusPill.getX() - chipW - space::m, header.getCentreY() - 11, chipW, 22);
+        g.setColour (colours::warn.withAlpha (0.12f));
+        g.fillRoundedRectangle (licenseChip.toFloat(), radius::control);
+        g.setColour (colours::warn);
+        g.drawText (chipText, licenseChip, juce::Justification::centred);
+    }
+    else
+    {
+        licenseChip = {};
+    }
 }
 
 void ContextAudioProcessorEditor::resized()
 {
     auto r = getLocalBounds();
-    auto header = r.removeFromTop (56);
-    auto tabs = header.withTrimmedLeft (210).withWidth (330).withSizeKeepingCentre (330, 32);
+    auto header = r.removeFromTop (ui::height::topBar);
+    auto tabs = header.withTrimmedLeft (132).withWidth (300);
     for (auto* b : { &generateTabButton, &historyTabButton, &settingsTabButton })
     {
-        b->setBounds (tabs.removeFromLeft (104));
-        tabs.removeFromLeft (6);
+        b->setBounds (tabs.removeFromLeft (84).withSizeKeepingCentre (84, 28));
+        tabs.removeFromLeft (2);
     }
-    generateTab.setBounds (r);
+    workspace.setBounds (r);
     historyTab.setBounds (r);
     settingsTab.setBounds (r);
     if (onboarding != nullptr)
