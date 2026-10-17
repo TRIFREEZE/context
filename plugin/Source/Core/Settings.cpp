@@ -117,6 +117,11 @@ SettingsStore::SettingsStore (juce::File f, SerialWorker& w)
     reloadFromDisk();
 }
 
+SettingsStore::~SettingsStore()
+{
+    worker.waitUntilIdle (10000);
+}
+
 void SettingsStore::reloadFromDisk()
 {
     Settings loaded = Settings::defaults();

@@ -152,6 +152,7 @@ public:
                 const auto a = analysis::analyze (progression (sr, 8.0, k.root, k.minor), sr, std::nullopt);
                 const auto expected = pitchClassName (k.root) + (k.minor ? " Minor" : " Major");
                 expect (a.valid);
+                logMessage ("  " + expected + " @" + juce::String (sr) + " -> " + a.keyDisplay() + " conf " + juce::String (a.keyConfidence, 2));
                 expect (a.keyKnown, "key unknown for " + expected + " @" + juce::String (sr) + " conf " + juce::String (a.keyConfidence));
                 expectEquals (a.keyDisplay(), expected, "@" + juce::String (sr));
             }

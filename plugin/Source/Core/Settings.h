@@ -61,6 +61,7 @@ class SettingsStore : public juce::ChangeBroadcaster
 {
 public:
     SettingsStore (juce::File file, SerialWorker& fileWorker);
+    ~SettingsStore() override;  // waits for queued saves that reference this store
 
     Settings get() const;
     void update (const std::function<void (Settings&)>& change);

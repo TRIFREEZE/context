@@ -133,6 +133,7 @@ struct GenerationResult
     std::optional<double> bpm;
     juce::String key, mode;
     bool favorite = false;
+    bool pinned = false;            // dragged/exported/copied into a project: never auto-deleted by cache cleanup
     juce::int64 lastUsedMs = 0;
     juce::NamedValueSet metadata;
     ErrorCode errorCode = ErrorCode::None;

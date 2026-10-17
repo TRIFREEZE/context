@@ -264,6 +264,7 @@ juce::var GenerationResult::toVar() const
     o->setProperty ("key", key);
     o->setProperty ("mode", mode);
     o->setProperty ("favorite", favorite);
+    o->setProperty ("pinned", pinned);
     o->setProperty ("lastUsedMs", lastUsedMs);
     if (errorCode != ErrorCode::None)
     {
@@ -304,6 +305,7 @@ std::optional<GenerationResult> GenerationResult::fromVar (const juce::var& v)
     r.key               = json::getString (v, "key").value_or ("");
     r.mode              = json::getString (v, "mode").value_or ("");
     r.favorite          = json::getBool (v, "favorite").value_or (false);
+    r.pinned            = json::getBool (v, "pinned").value_or (false);
     r.lastUsedMs        = (juce::int64) json::getNumber (v, "lastUsedMs").value_or (0.0);
     if (auto* meta = json::getPath (v, "metadata").getDynamicObject())
         r.metadata = meta->getProperties();

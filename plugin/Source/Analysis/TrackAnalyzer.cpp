@@ -116,7 +116,7 @@ KeyEstimate estimateKey (const std::array<double, 12>& chroma)
     const double strength = juce::jlimit (0.0, 1.0, scores[best]);
     const double margin = juce::jlimit (0.0, 1.0, (scores[best] - runnerUp) / 0.25);
     k.confidence = juce::jlimit (0.0, 1.0, 0.6 * strength + 0.4 * margin);
-    k.known = k.confidence >= 0.5 && scores[best] >= 0.5;
+    k.known = k.confidence >= 0.55 && scores[best] >= 0.5;   // a single sustained tone scores ~0.5: reported as Unknown
     return k;
 }
 
