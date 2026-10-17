@@ -24,6 +24,14 @@ int main (int argc, char* argv[])
                 context::test::integrationUrls().set (juce::String (opt).substring (2), args.getValueForOption (opt));
         runner.runTestsInCategory ("Integration");
     }
+    else if (args.containsOption ("--license-server"))
+    {
+        for (auto opt : { "--license-server", "--license-key", "--license-key-single", "--license-key-revoke",
+                          "--license-public-key", "--license-db", "--backend-dir", "--python" })
+            if (args.containsOption (opt))
+                context::test::integrationUrls().set (juce::String (opt).substring (2), args.getValueForOption (opt));
+        runner.runTestsInCategory ("LicenseIntegration");
+    }
     else if (args.containsOption ("--category"))
     {
         runner.runTestsInCategory (args.getValueForOption ("--category"));
@@ -32,7 +40,7 @@ int main (int argc, char* argv[])
     {
         juce::Array<juce::UnitTest*> tests;
         for (auto* t : juce::UnitTest::getAllTests())
-            if (t->getCategory() != "Integration")
+            if (t->getCategory() != "Integration" && t->getCategory() != "LicenseIntegration")
                 tests.add (t);
         runner.runTests (tests);
     }

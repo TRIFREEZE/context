@@ -1,0 +1,5 @@
+# Context licensing backend — runtime dependencies (pinned).
+fastapi==0.143.3
+uvicorn==0.54.0
+cryptography==50.0.2
+pydantic==2.14.1

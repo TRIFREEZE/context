@@ -17,6 +17,13 @@ if(Python3_Interpreter_FOUND)
                      --tests-exe "$<TARGET_FILE:ContextTests>"
                      --bridge "${CMAKE_SOURCE_DIR}/tools/reference_bridge/reference_bridge.py")
     set_tests_properties(bridge_integration PROPERTIES TIMEOUT 600)
+
+    add_test(NAME license_integration
+             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/integration/run_license_integration.py"
+                     --tests-exe "$<TARGET_FILE:ContextTests>"
+                     --backend "${CMAKE_SOURCE_DIR}/backend")
+    # Exit code 77 = backend Python packages not installed -> reported as skipped, not failed.
+    set_tests_properties(license_integration PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
 else()
     message(STATUS "Python 3 not found: bridge integration test disabled")
 endif()
