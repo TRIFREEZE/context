@@ -222,6 +222,7 @@ void ContextAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     tree.setProperty ("useTrackContext", s.useTrackContext, nullptr);
     tree.setProperty ("sendAudioContext", s.sendAudioContext, nullptr);
     tree.setProperty ("contextMode", s.contextMode, nullptr);
+    tree.setProperty ("stretchEdges", s.stretchEdges, nullptr);
     tree.setProperty ("tab", s.tab, nullptr);
     tree.setProperty ("selectedResultId", s.selectedResultId, nullptr);
     // V2 workspace: settings + references only (captured/generated audio stays in files).
@@ -256,6 +257,7 @@ void ContextAudioProcessor::setStateInformation (const void* data, int sizeInByt
         const auto cm = tree.getProperty ("contextMode", "layer").toString();
         s.contextMode = (cm == contextmode::cover || cm == contextmode::extend) ? cm : contextmode::layer;
     }
+    s.stretchEdges = (bool) tree.getProperty ("stretchEdges", false);
     s.tab = tree.getProperty ("tab", "generate").toString().substring (0, 16);
     s.selectedResultId = tree.getProperty ("selectedResultId").toString().substring (0, 64);
     setUiState (s);
@@ -443,9 +445,25 @@ PromptBuilder::Output ContextAudioProcessor::previewPrompt (const UiState& s) co
     if (s.useTrackContext)
     {
         in.analysis = analysisController->getLatest();
-        const double b = hostBpm.load();
-        if (b > 0.0) in.hostBpm = b;
+        // The session's tempo (the user's, the captured context's, else the DAW's) and key.
+        if (sessionController != nullptr)
+        {
+            in.hostBpm = sessionController->sessionTempo().bpm;
+            const auto k = sessionController->sessionKey();
+            if (in.analysis && k.known() && ! k.chosen)
+            {
+                in.analysis->keyKnown = true;
+                in.analysis->keyRoot = k.root;
+                in.analysis->minor = k.minor;
+                in.analysis->keyConfidence = k.confidence;
+            }
+        }
+        else if (const double b = hostBpm.load(); b > 0.0)
+            in.hostBpm = b;
     }
+    if (sessionController != nullptr)
+        if (const auto k = sessionController->sessionKey(); k.chosen)
+            in.userKey = std::make_pair (k.root, k.minor);
     return PromptBuilder::build (in);
 }
 

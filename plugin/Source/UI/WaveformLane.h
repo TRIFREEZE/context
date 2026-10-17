@@ -59,6 +59,9 @@ public:
     void setBusy (bool busy, const juce::String& text = {}, double progress = -1.0);
     void setMissing (const juce::String& message);
     void setCaptureProgress (double progress, bool active);   // context lane while recording
+    /** Sound lane while a new take is being generated: a living waveform being "written" across
+        the lane (the old take dims underneath), with the generator's status. */
+    void setGenerating (bool active, const juce::String& status = {}, double progress = -1.0);
 
     /** Return the file to drag to the DAW (rendered on demand); empty = no drag. */
     std::function<juce::File()> onDragOut;
@@ -101,6 +104,13 @@ private:
     double captureProgress = 0.0;
     bool capturing = false;
     bool dragHover = false, dragging = false;
+
+    void paintGenerating (juce::Graphics&, juce::Rectangle<float> area, bool empty);
+    bool generating = false;
+    juce::String generatingStatus;
+    double generatingProgress = -1.0;
+    motion::Value generatingFade { 0.0f };
+    double generatingStartMs = 0.0;
 
     juce::Image cache, previous;   // previous: the old waveform, cross-faded out on a change
     bool cacheValid = false;

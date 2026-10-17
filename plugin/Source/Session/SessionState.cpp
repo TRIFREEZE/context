@@ -58,6 +58,13 @@ juce::var SessionState::toVar() const
     if (arrangement.isEdited())
         o->setProperty ("edit", arrangement.toVar());
     o->setProperty ("grid", gridBeats);
+    if (tempoOverride)
+        o->setProperty ("tempoSet", *tempoOverride);
+    if (keyRoot >= 0)
+    {
+        o->setProperty ("keyRoot", keyRoot);
+        o->setProperty ("keyMinor", keyMinor);
+    }
     return juce::var (o);
 }
 
@@ -115,6 +122,10 @@ SessionState SessionState::fromVar (const juce::var& v)
     s.migrateLegacySource();
     s.arrangement = edit::Edit::fromVar (v.getProperty ("edit", {}), s.takeIds());
     s.gridBeats = num ("grid", 1.0, 0.0, 16.0);
+    if (v.hasProperty ("tempoSet"))
+        s.tempoOverride = num ("tempoSet", 120.0, musical::minBpm, musical::maxBpm);
+    s.keyRoot = (int) num ("keyRoot", -1, -1, 11);
+    s.keyMinor = flag ("keyMinor", false);
     return s;
 }
 

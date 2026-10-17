@@ -110,7 +110,13 @@ PromptBuilder::Output PromptBuilder::build (const Inputs& in)
 
     const bool keyUseful = isTonalType (in.type) && ! (intent.drumSubject && ! intent.tonalDrum);
     const bool keyUsefulForDrum = intent.tonalDrum;
-    if (a && a->valid && a->keyKnown && ! intent.explicitKey && (keyUseful || keyUsefulForDrum))
+    if (in.userKey && in.userKey->first >= 0 && in.userKey->first < 12 && ! intent.explicitKey && (keyUseful || keyUsefulForDrum))
+    {
+        out.key = pitchClassName (in.userKey->first);
+        out.mode = in.userKey->second ? "minor" : "major";
+        out.keyConfidence = 1.0;
+    }
+    else if (a && a->valid && a->keyKnown && ! intent.explicitKey && (keyUseful || keyUsefulForDrum))
     {
         out.key = a->keyName();
         out.mode = a->modeName().toLowerCase();

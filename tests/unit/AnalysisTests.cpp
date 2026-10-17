@@ -40,6 +40,93 @@ namespace
         return b;
     }
 
+    /** A trap-style loop in a minor key: i - i - VI - VII pads (same notes as the relative major),
+        an 808 that sits on the chord roots (mostly the tonic), kicks and hats. The classic case where
+        a profile-only detector says "relative major". */
+    juce::AudioBuffer<float> trapLoop (double sr, double seconds, int tonic, double bpm = 140.0)
+    {
+        juce::AudioBuffer<float> b (2, (int) (sr * seconds));
+        b.clear();
+        const int chords[4][3] = { { 0, 3, 7 }, { 0, 3, 7 }, { 8, 12, 15 }, { 10, 14, 17 } };
+        const int roots[4] = { 0, 0, 8, 10 };
+        const int chordLen = b.getNumSamples() / 4;
+        juce::Random rng (11);
+        const double beat = 60.0 / bpm;
+        for (int c = 0; c < 4; ++c)
+        {
+            for (int note = 0; note < 3; ++note)
+            {
+                const double f = synth::noteToHz (synth::noteNumber (tonic, 4) + chords[c][note]);
+                for (int i = 0; i < chordLen; ++i)
+                {
+                    const double t = i / sr;
+                    double v = 0;
+                    for (int h = 1; h <= 5; ++h)
+                        v += std::sin (pi2 * f * h * t + note) / (h * 1.5);
+                    const int idx = c * chordLen + i;
+                    b.addSample (0, idx, (float) (v * 0.05));
+                    b.addSample (1, idx, (float) (v * 0.05));
+                }
+            }
+            // 808 on the chord root, octave 1, hit every 1.5 beats, long decay, a little saturation.
+            const double f808 = synth::noteToHz (synth::noteNumber (tonic, 1) + roots[c]);
+            for (double hit = 0; hit < chordLen / sr; hit += 1.5 * beat)
+                for (int i = 0; i < (int) (1.4 * beat * sr); ++i)
+                {
+                    const int idx = c * chordLen + (int) (hit * sr) + i;
+                    if (idx >= (c + 1) * chordLen) break;
+                    const double t = i / sr;
+                    const double x = std::sin (pi2 * f808 * t) * std::exp (-t * 1.8);
+                    const float v = (float) (std::tanh (x * 1.6) * 0.5);
+                    b.addSample (0, idx, v);
+                    b.addSample (1, idx, v);
+                }
+        }
+        // Kicks and hats.
+        for (double t = 0; t < seconds; t += beat * 0.5)
+        {
+            const int start = (int) (t * sr);
+            const bool kick = std::fmod (t, beat * 2.0) < 1.0e-6;
+            for (int i = 0; i < (int) (0.12 * sr) && start + i < b.getNumSamples(); ++i)
+            {
+                const double tt = i / sr;
+                float v = (float) ((rng.nextFloat() * 2.0f - 1.0f) * std::exp (-tt / 0.01) * 0.25);
+                if (kick)
+                    v += (float) (std::sin (pi2 * (50.0 + 120.0 * std::exp (-tt * 30.0)) * tt) * std::exp (-tt * 18.0) * 0.6);
+                b.addSample (0, start + i, v);
+                b.addSample (1, start + i, v);
+            }
+        }
+        return b;
+    }
+
+    /** I - V - vi - IV in a major key with the bass on each chord root (no tonic bias in the bass). */
+    juce::AudioBuffer<float> popLoop (double sr, double seconds, int tonic)
+    {
+        juce::AudioBuffer<float> b (2, (int) (sr * seconds));
+        b.clear();
+        const int chords[4][3] = { { 0, 4, 7 }, { 7, 11, 14 }, { 9, 12, 16 }, { 5, 9, 12 } };
+        const int chordLen = b.getNumSamples() / 4;
+        for (int c = 0; c < 4; ++c)
+            for (int note = 0; note < 4; ++note)
+            {
+                const bool bassNote = note == 3;
+                const double f = bassNote ? synth::noteToHz (synth::noteNumber (tonic, 2) + chords[c][0])
+                                          : synth::noteToHz (synth::noteNumber (tonic, 4) + chords[c][note]);
+                for (int i = 0; i < chordLen; ++i)
+                {
+                    const double t = i / sr;
+                    double v = 0;
+                    for (int h = 1; h <= 4; ++h)
+                        v += std::sin (pi2 * f * h * t + note) / (h * 1.5);
+                    const float x = (float) (v * (bassNote ? 0.12 : 0.05) * std::exp (-t * 0.3));
+                    b.addSample (0, c * chordLen + i, x);
+                    b.addSample (1, c * chordLen + i, x);
+                }
+            }
+        return b;
+    }
+
     juce::AudioBuffer<float> clicks (double sr, double seconds, double bpm, int perBeat)
     {
         juce::AudioBuffer<float> b (2, (int) (sr * seconds));
@@ -160,6 +247,25 @@ public:
                 expect (a.keyKnown, "key unknown for " + expected + " @" + juce::String (sr) + " conf " + juce::String (a.keyConfidence));
                 expectEquals (a.keyDisplay(), expected, "@" + juce::String (sr));
             }
+
+        beginTest ("Trap loops in minor keys are not called the relative major");
+        for (double sr : { 44100.0, 48000.0 })
+            for (int tonic : { 10, 1, 4, 9, 6, 11 })     // A#m, C#m, Em, Am, F#m, Bm
+            {
+                const auto a = analysis::analyze (trapLoop (sr, 8.0, tonic), sr, std::nullopt);
+                const auto expected = pitchClassName (tonic) + " Minor";
+                logMessage ("  trap " + expected + " @" + juce::String (sr) + " -> " + a.keyDisplay() + " conf " + juce::String (a.keyConfidence, 2));
+                expectEquals (a.keyDisplay(), expected, "@" + juce::String (sr));
+            }
+
+        beginTest ("Major-key pop progressions stay major");
+        for (int tonic : { 0, 7, 2, 9, 5 })
+        {
+            const auto a = analysis::analyze (popLoop (48000.0, 8.0, tonic), 48000.0, std::nullopt);
+            const auto expected = pitchClassName (tonic) + " Major";
+            logMessage ("  pop " + expected + " -> " + a.keyDisplay() + " conf " + juce::String (a.keyConfidence, 2));
+            expectEquals (a.keyDisplay(), expected);
+        }
 
         beginTest ("Silence and noise are reported honestly");
         {

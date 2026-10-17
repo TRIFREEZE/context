@@ -69,12 +69,13 @@ public:
     void chipMenu (int index);
     void chipDragged (int index, juce::Point<int> posInRack);
     void chipDropped (int index, juce::Point<int> posInRack);
+    /** "+ Add effect" (public for the screenshot tests). */
+    void showAddMenu();
 
 private:
     void rebuildChips();
     void rebuildInspector();
     void layoutInspector();
-    void showAddMenu();
     void edited();
     int insertionIndexFor (juce::Point<int>) const;
     juce::String chainSignature() const;

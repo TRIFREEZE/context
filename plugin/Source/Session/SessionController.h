@@ -49,7 +49,7 @@ public:
         juce::String productName = "Context";
     };
 
-    enum class TempoSource { Context, Host, Manual };
+    enum class TempoSource { Context, Host, Manual, Set };
 
     struct CaptureStatus
     {
@@ -113,7 +113,24 @@ public:
     std::optional<double> hostBpm() const;
     bool hostTempoDiffers() const;          // context captured at a tempo the host no longer has
     void setManualTempo (double bpm);
+    /** The user sets the tempo. With a captured context, a whole-bar reading of the same audio
+        (half-time, double-time) just re-reads it; any other tempo re-fits the context to it.
+        Without a context, it is used instead of the DAW's tempo. */
+    void setTempo (double bpm);
+    /** Back to the DAW's tempo (without a context) / clears the user's tempo. */
+    void clearTempo();
     double renderRate() const;
+
+    // ---- key ----
+    struct Key { int root = -1; bool minor = false; bool chosen = false; double confidence = 0.0;
+                 bool known() const { return root >= 0; }
+                 juce::String display() const; };
+    /** The key Context works in: the user's choice, else the detected key of the captured context
+        (else of the recent audio). */
+    Key sessionKey() const;
+    Key detectedKey() const;
+    /** root -1 = detect automatically. */
+    void setKey (int root, bool minor);
 
     // ---- context ----
     void startCapture();
@@ -124,6 +141,8 @@ public:
     bool hasContext() const;
     void clearContext();
     void retargetContextToHostTempo();
+    /** Stretches the captured context to `target` (same number of bars). */
+    void retargetContext (musical::Tempo target);
     /** The captured context for uploading as audio conditioning. Safe from any thread. */
     struct UploadContext { AudioAsset::Ptr asset; int bars = 0; };
     UploadContext contextForUpload() const;
@@ -171,6 +190,7 @@ public:
     void editMove (int clipIndex, double newStart);
     void editTrim (int clipIndex, bool startEdge, double newEdge);
     void editStretch (int clipIndex, double newEnd);
+    void editStretchStart (int clipIndex, double newStart);
     void editClipGain (int clipIndex, float gainDb);
     void editCopy (double from, double to);
     void editCut (double from, double to);

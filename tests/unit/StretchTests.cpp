@@ -435,6 +435,44 @@ public:
                 if (std::abs (doubled.audio->getSample (0, i)) > 0.01f) second = i;
             expect (std::abs (second - (int) (musical::samplesForBars (8, t120, sr) + 3.0 * sr)) < 48, "second pass enters on bar 9 + 3 s");
         }
+
+        beginTest ("Aligned result much longer than the context, part only starts later: keep the bars with sound, on the grid");
+        {
+            const musical::Tempo t120 { 120.0, {} };          // 2 s per bar
+            // 40 bars (like Kie.ai's 78 s answer to 8 bars); a vocal from bar 21 to bar 32.
+            juce::AudioBuffer<float> song (2, (int) musical::samplesForBars (40, t120, sr));
+            song.clear();
+            const auto from = (int) musical::samplesForBars (20, t120, sr);
+            auto phrase = tone (440.0, (int) musical::samplesForBars (12, t120, sr));
+            for (int ch = 0; ch < 2; ++ch)
+                song.copyFrom (ch, from, phrase, ch, 0, phrase.getNumSamples());
+            auto longTake = std::make_shared<AudioAsset> (*asset (song));
+            longTake->origin = AudioAsset::Origin::Generated;
+            longTake->alignedToContext = true;
+            FitRequest req;
+            req.source = longTake;
+            req.tempo = t120;
+            req.bars = 8;
+            req.outputRate = sr;
+            auto fit = timefit::render (req);
+            expect (fit.ok() && fit.report.modeUsed == FitMode::Trim && ! fit.report.engineUsed);
+            expectEquals (fit.report.alignedStartBar, 20, "starts on bar 21, where the vocal comes in");
+            float peak = 0.0f;
+            for (int i = 0; i < fit.audio->getNumSamples(); i += 17) peak = juce::jmax (peak, std::abs (fit.audio->getSample (0, i)));
+            expect (peak > 0.2f, "the kept 8 bars have sound in them");
+
+            // A take that already has sound in its first bars stays where it is.
+            juce::AudioBuffer<float> early (2, (int) musical::samplesForBars (40, t120, sr));
+            early.clear();
+            auto lead = tone (440.0, (int) musical::samplesForBars (40, t120, sr));
+            for (int ch = 0; ch < 2; ++ch)
+                early.copyFrom (ch, 0, lead, ch, 0, lead.getNumSamples());
+            auto earlyTake = std::make_shared<AudioAsset> (*asset (early));
+            earlyTake->origin = AudioAsset::Origin::Generated;
+            earlyTake->alignedToContext = true;
+            req.source = earlyTake;
+            expectEquals (timefit::render (req).report.alignedStartBar, 0, "sound from bar 1: kept from bar 1");
+        }
     }
 };
 

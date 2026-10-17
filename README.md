@@ -31,7 +31,7 @@ your DAW.
 * Everything is saved with the DAW project (settings and references only — no audio, no
   credentials). Older projects load unchanged.
 
-### New in V2.1.1 (Send my track fix)
+### New in V2.1.1
 
 * **Send my track works.** Two bugs stopped it: the plugin encoded your track in JUCE's private
   base64 variant, which the bridge rejected; and with animations on, the confirm button in every
@@ -41,6 +41,22 @@ your DAW.
   track on, before sending, and every 10 s while the bridge is offline), so a bridge started or
   updated after the DAW is picked up without clicking Test Connection.
 * While sending, the status line says what goes out, e.g. "Sending your 8 bars (Layer)...".
+* **No more blank layers.** "Vocal chops" asked for as a Loop now goes through Kie.ai's add-vocals
+  (an instrumental cover has no vocal, so its vocal stem was silence). Kie.ai often answers 8 bars
+  with a ~78 s song whose part starts late: the bridge (1.1.1) keeps the 8 bars that have the part
+  in them, on your grid, and Context does the same for any aligned result whose first bars are empty.
+* **Kie.ai "Record does not exist"** on stem separation: the bridge now separates the result's audio
+  link instead. Errors name the step that failed.
+* **Set the tempo and key yourself**: click the BPM or the key in *Your track*. Half-time /
+  double-time re-reads your captured bars (nothing stretched); another tempo re-fits them; the key
+  you pick is what generations are asked for.
+* **Better key detection**: frame-by-frame pitch evidence plus the bass line picks the tonic, so a
+  trap loop in A# minor is no longer called C# major (tested on synthetic trap and pop loops).
+* **Drag to stretch**: *Trim | Stretch* next to Snap sets what dragging a clip edge does (**T**
+  switches, **Alt** gives the other one), and the grips at a clip's top corners always stretch.
+* **Generating** shows a living waveform being written across the sound lane (the old take dims
+  underneath) with the generator's status.
+* Right-click menus and the effect menu use Context's look (they fell back to JUCE's stock look).
 
 ### New in V2.1
 

@@ -159,8 +159,11 @@ std::optional<double> SessionController::hostBpm() const
 
 SessionController::TempoSource SessionController::tempoSource() const
 {
-    if (getState().context)
+    const auto s = getState();
+    if (s.context)
         return TempoSource::Context;
+    if (s.tempoOverride)
+        return TempoSource::Set;
     return hostBpm() ? TempoSource::Host : TempoSource::Manual;
 }
 
@@ -170,6 +173,9 @@ musical::Tempo SessionController::sessionTempo() const
     if (s.context && s.context->tempo.isValid())
         return s.context->tempo;
     const auto h = deps.host();
+    const auto sig = h.signature.isValid() ? h.signature : s.manualSignature;
+    if (s.tempoOverride && musical::isValidBpm (*s.tempoOverride))
+        return { *s.tempoOverride, sig };
     if (h.bpm && musical::isValidBpm (*h.bpm))
         return { *h.bpm, h.signature.isValid() ? h.signature : musical::TimeSignature{} };
     return { s.manualBpm, s.manualSignature };
@@ -179,7 +185,101 @@ bool SessionController::hostTempoDiffers() const
 {
     const auto s = getState();
     const auto h = hostBpm();
-    return s.context && h && std::abs (*h - s.context->tempo.bpm) > 0.05;
+    if (! s.context || ! h)
+        return false;
+    // Half-time / double-time readings of the DAW tempo play in time with it.
+    for (double f : { 1.0, 0.5, 2.0 })
+        if (std::abs (*h * f - s.context->tempo.bpm) <= 0.05)
+            return false;
+    return true;
+}
+
+void SessionController::setTempo (double bpm)
+{
+    if (! musical::isValidBpm (bpm))
+        return;
+    const auto s = getState();
+    if (! s.context)
+    {
+        mutate ([bpm] (SessionState& st) { st.tempoOverride = bpm; st.manualBpm = bpm; });
+        deps.engine->setTempo (bpm);
+        requestRender();
+        sendChangeMessage();
+        return;
+    }
+    const auto old = s.context->tempo;
+    if (std::abs (old.bpm - bpm) < 0.005)
+        return;
+    // Same audio, read at another tempo: possible when it is still a whole number of bars.
+    const double bars = s.context->bars * bpm / old.bpm;
+    const int whole = (int) std::lround (bars);
+    if (std::abs (bars - whole) < 1.0e-6 && whole >= 1 && whole <= 64)
+    {
+        auto meta = *s.context;
+        meta.tempo.bpm = bpm;
+        meta.bars = whole;
+        mutate ([&meta] (SessionState& st) { st.context = meta; });
+        publishUploadContext();
+        deps.engine->setTempo (bpm);
+        publishProgram();
+        requestRender();
+        notify ("Your track is now read as " + juce::String (whole) + " bars at " + bpmText (bpm) + " BPM (same audio).");
+        sendChangeMessage();
+        return;
+    }
+    retargetContext ({ bpm, old.signature });
+}
+
+void SessionController::clearTempo()
+{
+    if (! getState().tempoOverride)
+        return;
+    mutate ([] (SessionState& st) { st.tempoOverride.reset(); });
+    deps.engine->setTempo (sessionTempo().bpm);
+    requestRender();
+    sendChangeMessage();
+}
+
+juce::String SessionController::Key::display() const
+{
+    return known() ? pitchClassName (root) + (minor ? " minor" : " major") : juce::String();
+}
+
+SessionController::Key SessionController::detectedKey() const
+{
+    Key k;
+    auto a = ctxAnalysis;
+    if (! a && deps.analysis != nullptr)
+        a = deps.analysis->getLatest();
+    if (a && a->valid && a->keyKnown)
+    {
+        k.root = a->keyRoot;
+        k.minor = a->minor;
+        k.confidence = a->keyConfidence;
+    }
+    return k;
+}
+
+SessionController::Key SessionController::sessionKey() const
+{
+    const auto s = getState();
+    if (s.keyRoot >= 0 && s.keyRoot < 12)
+    {
+        Key k;
+        k.root = s.keyRoot;
+        k.minor = s.keyMinor;
+        k.chosen = true;
+        k.confidence = 1.0;
+        return k;
+    }
+    return detectedKey();
+}
+
+void SessionController::setKey (int root, bool minor)
+{
+    root = root >= 0 && root < 12 ? root : -1;
+    mutate ([root, minor] (SessionState& st) { st.keyRoot = root; st.keyMinor = root >= 0 && minor; });
+    sendChangeMessage();
 }
 
 void SessionController::setManualTempo (double bpm)
@@ -449,7 +549,14 @@ void SessionController::retargetContextToHostTempo()
     const auto s = getState();
     if (contextAsset == nullptr || ! h || ! s.context)
         return;
-    const musical::Tempo target { *h, deps.host().signature.isValid() ? deps.host().signature : s.context->tempo.signature };
+    retargetContext ({ *h, deps.host().signature.isValid() ? deps.host().signature : s.context->tempo.signature });
+}
+
+void SessionController::retargetContext (musical::Tempo target)
+{
+    const auto s = getState();
+    if (contextAsset == nullptr || ! s.context || ! target.isValid())
+        return;
     auto asset = contextAsset;
     const auto oldMeta = *s.context;
     const auto folder = deps.contextCacheFolder ? deps.contextCacheFolder() : juce::File();
@@ -911,6 +1018,11 @@ void SessionController::editTrim (int clip, bool startEdge, double edge)
 void SessionController::editStretch (int clip, double end)
 {
     editWith ([=] (const edit::Edit& e, const juce::String& b, double t) { return edit::stretchClip (e, b, t, clip, end); });
+}
+
+void SessionController::editStretchStart (int clip, double start)
+{
+    editWith ([=] (const edit::Edit& e, const juce::String& b, double t) { return edit::stretchClipStart (e, b, t, clip, start); });
 }
 
 void SessionController::editClipGain (int clip, float db)

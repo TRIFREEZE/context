@@ -80,6 +80,8 @@ Edit moveClip (const Edit&, const juce::String& baseTake, double total, int inde
 Edit trimClip (const Edit&, const juce::String& baseTake, double total, int index, bool startEdge, double newEdge);
 /** Drag the end edge with stretch: the clip's audio is time-stretched to the new length. */
 Edit stretchClip (const Edit&, const juce::String& baseTake, double total, int index, double newEnd);
+/** Drag the start edge with stretch: the end stays put, the audio is stretched to fit. */
+Edit stretchClipStart (const Edit&, const juce::String& baseTake, double total, int index, double newStart);
 Edit setClipGain (const Edit&, const juce::String& baseTake, double total, int index, float gainDb);
 /** Clips in [from, to), relative to `from` (a clipboard). */
 std::vector<Clip> copyRange (const Edit&, const juce::String& baseTake, double total, double from, double to);

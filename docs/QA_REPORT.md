@@ -176,3 +176,35 @@ fake Kie.ai, layer and restyle; the script asserts the bridge logged and uploade
 
 Run here (Linux): `ContextTests --unit` 5693 checks, 0 failed; `ctest` 5/5; `run_kie_bridge_e2e.py` passes
 with and without the MP3 decoder. Not verified: a real Kie.ai account, Windows/FL Studio by hand.
+
+### V2.1.1, second round: blank layers, menus, tempo/key, stretch, generating lane
+
+Reported: Layer results were blank (a Loop "Dark vocal chops": "Made on your track, 77.6 s",
+"50.10 -> 8 bars ... Auto picked Trim"); menus looked foreign.
+
+Root causes:
+
+1. The bridge routed a Loop with "vocal" in the prompt to an *instrumental* cover and then kept the
+   vocal stem (silence). Fixed: any layer that asks for vocals uses add-vocals; a silent stem falls
+   back to the full result.
+2. Kie.ai returned 77.6 s for 12.4 s of context; Context kept the first 8 bars, which were empty.
+   Fixed in the bridge (keeps the bar-aligned window with the part) and in Context's fit (an aligned
+   result whose first bars are clearly empty starts on the first bar with sound; the fit sentence
+   says "kept bars 21-28 (the first bars were empty)").
+3. JUCE popup menus only use a custom LookAndFeel when it is set on the menu; ours was set only for
+   combo boxes. Fixed with `ui::showMenu` (every menu) and rounded, in-window menus.
+
+Also: key detection rewritten (frame chroma + harmonic summation + bass-tonic evidence; old tests
+improve from 0.64-0.95 to 0.94-0.98 confidence; new trap-minor and pop-major tests 17/17 where the
+old detector got 2/12 trap loops right), tempo/key sheets, Trim | Stretch edge mode + corner grips +
+stretch from the start edge, generating animation.
+
+Tests added: bridge e2e (vocal chops routing, late vocal kept on the grid, separation fallback,
+named errors), StretchTests (aligned window), AnalysisTests (trap minor, pop major), TempoKeyTests
+(override without context, half-time re-read, re-fit, key in prompt, persistence), EditTests
+(stretch from start), screenshots (menus, tempo/key sheets, generating lane).
+
+Run here (Linux): `ContextTests --unit` 5747 checks, 0 failed; `ctest` 5/5; `run_kie_bridge_e2e.py`
+passes. Not verified: real Kie.ai results (the fake Kie server reproduces the reported shapes),
+FL Studio on Windows by hand, real menu windows (headless machine: menus were rendered through the
+same LookAndFeel calls).

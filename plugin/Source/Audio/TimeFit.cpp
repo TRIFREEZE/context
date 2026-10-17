@@ -94,18 +94,75 @@ namespace
         }
     }
 
-    /** Copy (or pad) to exactly `length`, fading out if the cut lands on sound. */
-    juce::AudioBuffer<float> trimTo (const juce::AudioBuffer<float>& in, juce::int64 length, double rate)
+    /** Copy (or pad) to exactly `length` from `offset`, fading out if the cut lands on sound. */
+    juce::AudioBuffer<float> trimTo (const juce::AudioBuffer<float>& in, juce::int64 length, double rate, juce::int64 offset = 0)
     {
         juce::AudioBuffer<float> out (2, (int) length);
         out.clear();
-        const int n = (int) juce::jmin<juce::int64> (length, in.getNumSamples());
+        offset = juce::jlimit<juce::int64> (0, in.getNumSamples(), offset);
+        const int n = (int) juce::jmin<juce::int64> (length, in.getNumSamples() - offset);
         for (int ch = 0; ch < 2; ++ch)
-            out.copyFrom (ch, 0, in, juce::jmin (ch, in.getNumChannels() - 1), 0, n);
-        if (in.getNumSamples() > length && n > 0)
+            out.copyFrom (ch, 0, in, juce::jmin (ch, in.getNumChannels() - 1), (int) offset, n);
+        if (offset > 0 && n > 0)
+        {
+            const int fade = juce::jmin (n / 4, (int) (0.003 * rate));
+            for (int ch = 0; ch < 2; ++ch)
+                out.applyGainRamp (ch, 0, fade, 0.0f, 1.0f);
+        }
+        if (in.getNumSamples() - offset > length && n > 0)
             if (std::abs (out.getSample (0, n - 1)) > 1.0e-3f || std::abs (out.getSample (1, n - 1)) > 1.0e-3f)
                 fadeOutTail (out, n, (int) (0.004 * rate));
         return out;
+    }
+
+    /** For a context-aligned result longer than the target: which whole bar to start from.
+        Bridges (and Kie.ai) can return a long song whose part only starts after an intro; keeping
+        the first bars would give silence. Moves only when the first window is clearly emptier
+        (under a quarter of the energy) than the best one, then takes the earliest window with at
+        least 90 % of the best. Stays on the bar grid, so the result is still in time. */
+    int alignedStartBar (const juce::AudioBuffer<float>& st, double rate, const musical::Tempo& tempo, int bars)
+    {
+        const auto window = musical::samplesForBars (bars, tempo, rate);
+        const auto total = (juce::int64) st.getNumSamples();
+        if (window <= 0 || total < window + musical::samplesForBars (1, tempo, rate))
+            return 0;
+        const int hop = juce::jmax (1, (int) (0.05 * rate));
+        std::vector<double> prefix (1, 0.0);
+        for (juce::int64 i = 0; i + hop <= total; i += hop)
+        {
+            double acc = 0.0;
+            for (int ch = 0; ch < st.getNumChannels(); ++ch)
+            {
+                const float* d = st.getReadPointer (ch, (int) i);
+                for (int k = 0; k < hop; k += 4)
+                    acc += (double) d[k] * d[k];
+            }
+            prefix.push_back (prefix.back() + acc);
+        }
+        auto energy = [&] (juce::int64 start)
+        {
+            const auto a = (size_t) juce::jmin<juce::int64> ((juce::int64) prefix.size() - 1, start / hop);
+            const auto b = (size_t) juce::jmin<juce::int64> ((juce::int64) prefix.size() - 1, (start + window) / hop);
+            return prefix[b] - prefix[a];
+        };
+        std::vector<std::pair<int, double>> windows;
+        for (int bar = 0; ; ++bar)
+        {
+            const auto start = musical::samplesForBars (bar, tempo, rate);
+            if (start + window > total)
+                break;
+            windows.push_back ({ bar, energy (start) });
+        }
+        if (windows.size() < 2)
+            return 0;
+        double best = 0.0;
+        for (auto& w : windows) best = juce::jmax (best, w.second);
+        if (best <= 0.0 || windows.front().second >= 0.25 * best)
+            return 0;
+        for (auto& w : windows)
+            if (w.second >= 0.9 * best)
+                return w.first;
+        return 0;
     }
 
     juce::AudioBuffer<float> runEngine (stretch::Algorithm algo, const juce::AudioBuffer<float>& in, double ratio, double pitch,
@@ -430,7 +487,13 @@ FitResult render (const FitRequest& req, const stretch::TimeStretchEngine::Progr
                 st = runEngine (algo, st, 1.0, pitch, rate, progress);
                 rep.engineUsed = true;
             }
-            out = trimTo (st, target, rate);
+            juce::int64 offset = 0;
+            if (rep.aligned)
+            {
+                rep.alignedStartBar = alignedStartBar (st, rate, req.tempo, req.bars);
+                offset = musical::samplesForBars (rep.alignedStartBar, req.tempo, rate);
+            }
+            out = trimTo (st, target, rate, offset);
             rep.pitchSemitones = pitch;
             break;
         }

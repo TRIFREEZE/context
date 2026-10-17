@@ -160,6 +160,121 @@ void WaveformLane::setBusy (bool b, const juce::String& text, double progress)
     repaint();
 }
 
+void WaveformLane::setGenerating (bool active, const juce::String& status, double progress)
+{
+    if (active != generating)
+    {
+        generating = active;
+        if (active)
+            generatingStartMs = motion::nowMs();
+        generatingFade.onChange = [this] { repaint(); };
+        generatingFade.set (active ? 1.0f : 0.0f, active ? motion::duration::panel : motion::duration::panel * 1.5f, motion::Ease::OutCubic);
+    }
+    if (status != generatingStatus || std::abs (progress - generatingProgress) > 0.002)
+    {
+        generatingStatus = status;
+        generatingProgress = progress;
+        repaint();
+    }
+}
+
+void WaveformLane::paintGenerating (juce::Graphics& g, juce::Rectangle<float> area, bool empty)
+{
+    const float fade = generatingFade.get();
+    if (fade <= 0.001f)
+        return;
+    const bool moving = motion::enabled();
+    const double t = moving ? (motion::nowMs() - generatingStartMs) / 1000.0 : 0.0;
+
+    // The old take steps back.
+    if (! empty)
+    {
+        g.setColour (colours::well.withAlpha (0.86f * fade));
+        g.fillRect (area);
+    }
+
+    // Where the "writing" head is: the real progress when the generator reports it, otherwise a
+    // calm sweep that eases across and starts again.
+    double head;
+    if (generatingProgress >= 0.0)
+        head = juce::jlimit (0.0, 1.0, generatingProgress);
+    else
+    {
+        const double cycle = std::fmod (t / 3.2, 1.0);
+        head = 0.5 - 0.5 * std::cos (cycle * juce::MathConstants<double>::pi);   // ease in-out
+    }
+
+    // A field of thin bars whose heights drift like a waveform being imagined.
+    const float barW = 2.0f, gap = 3.0f;
+    const int n = juce::jmax (8, (int) (area.getWidth() / (barW + gap)));
+    const float cy = area.getCentreY(), halfH = area.getHeight() * 0.42f;
+    const auto accent = colours::waveform;
+    for (int i = 0; i < n; ++i)
+    {
+        const double u = (i + 0.5) / n;
+        const double edge = juce::jlimit (0.0, 1.0, juce::jmin (u, 1.0 - u) / 0.06);
+        const double env = edge * edge * (3.0 - 2.0 * edge);                         // smoothstep at the lane ends
+        const double wave = 0.5 + 0.5 * std::sin (juce::MathConstants<double>::twoPi * (u * 3.1 + t * 0.21))
+                                       * std::sin (juce::MathConstants<double>::twoPi * (u * 7.3 - t * 0.37));
+        const double grain = 0.5 + 0.5 * std::sin (i * 2.399 + t * 1.7);           // per-bar shimmer
+        const double amp = env * (0.16 + 0.62 * wave + 0.22 * grain);
+        const double d = u - head;                                                   // <0: already written
+        float alpha;
+        if (d <= 0.0)
+            alpha = (float) (0.20 + 0.38 * std::exp (d * 5.0));                        // trail that settles
+        else
+            alpha = (float) (0.07 * std::exp (-d * 2.0));                              // not yet written
+        const float glow = (float) std::exp (-(d * d) / (2.0 * 0.018 * 0.018));        // bright at the head
+        alpha = juce::jlimit (0.0f, 1.0f, alpha + 0.6f * glow) * fade;
+        const float h = juce::jmax (1.5f, (float) amp * halfH * (1.0f + 0.25f * glow));
+        const float x = area.getX() + (float) u * area.getWidth() - barW * 0.5f;
+        g.setColour (accent.withAlpha (alpha));
+        g.fillRoundedRectangle (x, cy - h, barW, h * 2.0f, 1.0f);
+    }
+
+    // The head itself: a fine line with a soft halo.
+    const float hx = area.getX() + (float) head * area.getWidth();
+    juce::ColourGradient halo (accent.withAlpha (0.0f), hx - 26.0f, cy, accent.withAlpha (0.0f), hx + 26.0f, cy, false);
+    halo.addColour (0.5, accent.withAlpha (0.16f * fade));
+    g.setGradientFill (halo);
+    g.fillRect (juce::Rectangle<float> (hx - 26.0f, area.getY(), 52.0f, area.getHeight()));
+    g.setColour (accent.withAlpha (0.85f * fade));
+    g.fillRect (hx - 0.75f, area.getY() + 6.0f, 1.5f, area.getHeight() - 12.0f);
+
+    // Status, on a quiet pill.
+    const auto f1 = font (type::body, Weight::SemiBold), f2 = font (type::label);
+    const juce::String title = "Generating";
+    const auto status = generatingStatus;
+    const float w1 = (float) juce::GlyphArrangement::getStringWidthInt (f1, title);
+    const float w2 = status.isNotEmpty() ? (float) juce::GlyphArrangement::getStringWidthInt (f2, status) : 0.0f;
+    // 14 pad + 6 dot + 6 gap + title + (10 gap + status) + 16 pad
+    const float pillW = juce::jmin (area.getWidth() - 24.0f, 14.0f + 12.0f + w1 + 2.0f + (w2 > 0.0f ? 10.0f + w2 + 2.0f : 0.0f) + 16.0f);
+    auto pill = juce::Rectangle<float> (pillW, 26.0f).withCentre (area.getCentre());
+    g.setColour (colours::panel.withAlpha (0.92f * fade));
+    g.fillRoundedRectangle (pill, 13.0f);
+    g.setColour (colours::border.withAlpha (fade));
+    g.drawRoundedRectangle (pill.reduced (0.5f), 13.0f, 1.0f);
+    auto inner = pill.withTrimmedLeft (14.0f).withTrimmedRight (14.0f);
+    // A breathing dot: the generator is alive.
+    const float pulse = moving ? 0.55f + 0.45f * (float) std::sin (t * 3.4) : 1.0f;
+    g.setColour (accent.withAlpha (fade * (0.45f + 0.55f * pulse)));
+    g.fillEllipse (inner.getX(), pill.getCentreY() - 3.0f, 6.0f, 6.0f);
+    inner.removeFromLeft (12.0f);
+    g.setColour (colours::text.withAlpha (fade));
+    g.setFont (f1);
+    g.drawText (title, inner.removeFromLeft (w1 + 2.0f), juce::Justification::centredLeft, false);
+    if (w2 > 0.0f)
+    {
+        inner.removeFromLeft (10.0f);
+        g.setColour (colours::faint.withAlpha (fade));
+        g.setFont (f2);
+        g.drawText (status, inner, juce::Justification::centredLeft, true);
+    }
+
+    if (moving && (generating || fade > 0.001f))
+        motion::Clock::instance().repaintUntil (*this, motion::nowMs() + 100.0);
+}
+
 void WaveformLane::setMissing (const juce::String& message)
 {
     if (message == missingText) return;
@@ -299,6 +414,10 @@ void WaveformLane::paint (juce::Graphics& g)
         g.fillRect (area.withRight (x));
         g.setColour (colours::lamp);
         g.fillRect (x - 1.0f, area.getY(), 2.0f, area.getHeight());
+    }
+    else if (generatingFade.get() > 0.001f && ! busy)
+    {
+        paintGenerating (g, area, empty);
     }
     else if (busy)
     {

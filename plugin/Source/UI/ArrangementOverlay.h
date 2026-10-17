@@ -10,7 +10,8 @@ namespace context::ui
 
       drag on the waveform         select a range (snaps to the grid; Alt = free)
       drag a clip's name strip     move the clip
-      drag a clip edge             trim it            Alt+drag an edge: stretch it
+      drag a clip edge             trim it (or stretch it in Stretch mode; Alt = the other one)
+      drag a clip's corner grip    stretch it, from either end
       double-click a clip          select the clip
       click                        move the playhead
       right-click                  everything else (split, fill, takes, copy/paste...)
@@ -31,6 +32,9 @@ public:
     void selectAll();
     double playheadBeat() const { return playhead; }
     double snapBeat (double beat, bool free) const;
+    /** Edge drags stretch (true) or trim (false). The corner grips always stretch. */
+    void setStretchEdges (bool b) { stretchEdges = b; }
+    bool getStretchEdges() const { return stretchEdges; }
 
     std::function<void (double beat)> onSeek;
     std::function<void (double from, double to)> onFillWithNewTake;
@@ -50,8 +54,11 @@ public:
     static constexpr int stripHeight = 17;
 
 private:
-    enum class Drag { None, Select, Move, TrimStart, TrimEnd, Stretch, Out };
-    struct Hit { int clip = -1; Drag edge = Drag::None; bool strip = false; bool dragHandle = false; };
+    enum class Drag { None, Select, Move, TrimStart, TrimEnd, Stretch, StretchStart, Out };
+    struct Hit { int clip = -1; Drag edge = Drag::None; bool strip = false; bool dragHandle = false; bool grip = false; };
+    static bool isStretch (Drag d) { return d == Drag::Stretch || d == Drag::StretchStart; }
+    Drag resolveEdge (const Hit&, bool alt) const;
+    juce::Rectangle<float> gripArea (int clip, bool atStart) const;
 
     Hit hitTest (juce::Point<float>) const;
     float xForBeat (double beat) const;
@@ -75,5 +82,6 @@ private:
     Hit hover;
 
     motion::Value selAlpha { 0.0f };
+    bool stretchEdges = false;
 };
 } // namespace context::ui

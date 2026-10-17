@@ -174,8 +174,12 @@ Undo / redo arrows sit next to the page tabs (Ctrl+Z, Ctrl+Shift+Z).
 4. Tempo, key and a small low/mid/high readout appear in the lane header. With **Analysis** on,
    they shape the next generation.
 
-No DAW tempo? Click the BPM in the lane header to type one. Changed the song's tempo later? The
-header offers **Fit to … BPM** or **Capture again**.
+**Tempo and key are yours to set.** Click the BPM in the lane header for the *Tempo* sheet: type a
+tempo, or pick **Half-time** / **Double-time** (your captured bars are re-read at that tempo, nothing
+is stretched) or the DAW's tempo. Any other tempo re-fits your bars to it. Click the key for the
+*Key* sheet: pick the root and Major/Minor, or **Detect automatically**. The key you set is what
+generations are asked for (a key typed into the prompt still wins), even with *Analysis* off.
+Changed the song's tempo later? The header offers **Fit to … BPM** or **Capture again**.
 
 ## T. Make a sound
 
@@ -189,6 +193,9 @@ header offers **Fit to … BPM** or **Capture again**.
   never trimmed: Context trusts where they start.
 * **Fit**: *Auto* chooses for you; *Fit* time-stretches; *Trim* cuts; *Loop* repeats; *Repitch*
   speeds up or slows down like tape. The sentence on the right says what was done.
+
+While a sound is being generated, the lower lane shows a waveform being written across it (your
+previous take dims underneath) with what the generator is doing.
 
 ### Make it on your track: Send my track
 
@@ -216,7 +223,8 @@ On the lower lane:
 | **S** | split at the playhead (or at both edges of the selection) |
 | **Delete** | silence the selection (hatched = silent on purpose) |
 | Drag a clip's name strip | move the clip |
-| Drag a clip's edge | trim it; **Alt**+drag the right edge to **stretch** it |
+| Drag a clip's edge | trim it, or **stretch** it when *Trim \| Stretch* (next to Snap) is on Stretch. **T** switches; **Alt** gives the other one while you drag |
+| Drag a grip at a clip's top corner | always **stretch** (from either end; pitch is kept, ×0.25–×4) |
 | Double-click a clip | select it |
 | Ctrl+C / X / V, Ctrl+D | copy, cut, paste at the playhead, duplicate |
 | **Snap** (above the lanes) or **G** | change or turn off the grid |

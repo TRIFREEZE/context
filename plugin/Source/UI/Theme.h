@@ -159,6 +159,10 @@ public:
 /** Thin progress bar; progress outside 0..1 draws an indeterminate sliding segment. */
 void drawProgress (juce::Graphics& g, juce::Rectangle<float> r, double progress);
 
+/** Every menu goes through here: it gets Context's look (JUCE otherwise falls back to its stock
+    look for menus) and opens inside the plugin window, with rounded corners. */
+void showMenu (juce::PopupMenu& menu, juce::Component& owner, juce::PopupMenu::Options options, std::function<void (int)> onResult);
+
 /** Section background with an optional hairline border. */
 inline void paintCard (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour fill = colours::panel)
 {

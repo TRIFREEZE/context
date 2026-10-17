@@ -66,7 +66,7 @@ captured 8 bars to the bridge, and the bridge:
 
 | Context setting | Type | Kie.ai steps | You get |
 |---|---|---|---|
-| **Layer** | Vocal | `ai-music-api/add-vocals` on your bars, then `ai-music-api/separate-vocals` (2 stems) | only the new vocal, in time and in key with your track |
+| **Layer** | Vocal, or a prompt that asks for vocals ("vocal chops" as a Loop) | `ai-music-api/add-vocals` on your bars, then `ai-music-api/separate-vocals` (2 stems) | only the new vocal, in time and in key with your track |
 | **Layer** | anything else | `ai-music-api/upload-and-cover-audio` (instrumental, in the prompt's style), then `separate-vocals` with `split_stem` | the stem your prompt names: drums, bass, guitar, keys (piano, rhodes, bells), strings, brass, woodwinds, synth (pad, lead, pluck), percussion or FX. If the prompt names none, the whole result. |
 | **Restyle** | any | `ai-music-api/upload-and-cover-audio` with `duration` = your bars (Kie.ai's minimum is 10 s) | your bars re-imagined in the prompt's style |
 | **Continue** | any | `ai-music-api/upload-and-extend-audio` with `continue_at` = the end of your bars | what comes next. If Kie.ai returns your bars plus the continuation, the bridge detects that and cuts your part off. |
@@ -77,6 +77,15 @@ captured 8 bars to the bridge, and the bridge:
   capture), so Context keeps every sample where it is: no stretching, no silence trimming.
 * **Settings** (in `config.json`): `context_audio_weight` (0–1, default `0.8`: how strongly Kie.ai
   follows your audio) and `negative_tags` (default `low quality, muffled, clipping`).
+* **Long results:** Kie.ai can answer your 8 bars with a whole song (a user got 77.6 s) whose new
+  part only starts after an intro. The bridge (1.1.1) keeps one context-length window on your bar
+  grid: the first one with at least 90 % of the loudest window's sound. Its window says which bars
+  it kept ("kept the vocal from bars 17-24").
+* **Stem separation** is asked by task id + audio id first (the documented example). Kie.ai has
+  answered "Record does not exist" for results made from uploaded audio, so the bridge then uses the
+  documented `audio_url` input with the clip's link. If separation still fails, or the stem is
+  silent, the bridge delivers the full result (the credits are already spent) and says so.
+* **Errors name the step**, e.g. "Kie.ai add-vocals: ..." or "Kie.ai stem separation: ...".
 * **What isn't known yet:** Kie.ai's docs don't say how long add-vocals results are or exactly how
   the stem files are named. The bridge accepts every documented result shape and falls back to the
   full result when the requested stem isn't there; its window says which stem it kept.

@@ -59,7 +59,7 @@ try:  # optional: MP3 -> WAV fallback
 except Exception:  # pragma: no cover - depends on the user's machine
     miniaudio = None
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 PROTOCOL = "context-bridge-v1"
 TYPES = ["one_shot", "loop", "vocal", "instrument", "percussion", "texture", "fx", "melody"]
 DEFAULT_API_BASE = "https://api.kie.ai"
@@ -634,6 +634,108 @@ def cut_wav_start(path: str, seconds: float) -> bool:
         return False
 
 
+def is_silent(path: str, floor: int = 100) -> bool:
+    """True when a WAV/MP3 never gets above about -50 dBFS (a stem with nothing in it)."""
+    r = read_mono16(path)
+    if not r:
+        return False
+    mono = r[1]
+    for i in range(0, len(mono), 7):
+        if abs(mono[i]) > floor:
+            return False
+    return True
+
+
+def grid_phase(context_path: str, mix_path: str, bar_seconds: float) -> float:
+    """Where the context's bar grid sits in a result that was made on it (0 .. one bar), found by
+    matching the loudness envelopes; 0 when the match is too weak to trust."""
+    ctx = read_mono16(context_path)
+    mix = read_mono16(mix_path)
+    if not ctx or not mix or bar_seconds <= 0:
+        return 0.0
+    ce = envelope(ctx[0], ctx[1])
+    me = envelope(mix[0], mix[1], limit_seconds=len(ctx[1]) / float(ctx[0]) + bar_seconds + 0.5)
+    best, best_lag = 0.0, 0
+    for lag in range(0, max(1, min(int(bar_seconds / 0.02), len(me) - 10))):
+        c = correlation(ce, me[lag:])
+        if c > best:
+            best, best_lag = c, lag
+    return best_lag * 0.02 if best >= 0.5 else 0.0
+
+
+def pick_window(path: str, window_seconds: float, step_seconds: float, phase_seconds: float = 0.0):
+    """Start (seconds) of the window that should be kept from a result longer than the context.
+
+    Windows start on the context's grid (phase + k * step). The earliest window with at least 90 %
+    of the loudest window's energy wins, so a silent intro is skipped but an early, solid part is
+    kept. None when the file can't be read or isn't longer than one window."""
+    r = read_mono16(path)
+    if not r or window_seconds <= 0 or step_seconds <= 0:
+        return None
+    rate, mono = r
+    total = len(mono) / float(rate)
+    if total < window_seconds + step_seconds * 0.5:
+        return None
+    hop = 0.05
+    env = envelope(rate, mono, hop_seconds=hop)
+    prefix = [0.0]
+    for v in env:
+        prefix.append(prefix[-1] + v * v)
+
+    def energy(start):
+        a = int(round(start / hop))
+        b = min(len(env), a + int(round(window_seconds / hop)))
+        return prefix[b] - prefix[a] if b > a else 0.0
+
+    starts, t = [], phase_seconds
+    while t + window_seconds <= total + 0.02:
+        starts.append(t)
+        t += step_seconds
+    if not starts:
+        return None
+    energies = [energy(x) for x in starts]
+    best = max(energies)
+    if best <= 0:
+        return None
+    for x, e in zip(starts, energies):
+        if e >= 0.9 * best:
+            return x
+    return starts[0]
+
+
+def cut_wav_window(path: str, start: float, length: float) -> bool:
+    """Keeps [start, start + length) of a 16-bit WAV in place, with 3 ms fades at both ends."""
+    import array
+    import wave
+    try:
+        with wave.open(path, "rb") as w:
+            rate, ch, width, n = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes()
+            if width != 2:
+                return False
+            first = max(0, min(n, int(round(start * rate))))
+            count = max(0, min(n - first, int(round(length * rate))))
+            w.setpos(first)
+            data = array.array("h")
+            data.frombytes(w.readframes(count))
+        frames = len(data) // ch
+        fade = min(frames // 4, int(0.003 * rate))
+        for f in range(fade):
+            g = (f + 1) / float(fade)
+            for c in range(ch):
+                data[f * ch + c] = int(data[f * ch + c] * g)
+                data[(frames - 1 - f) * ch + c] = int(data[(frames - 1 - f) * ch + c] * g)
+        tmp = path + ".cut"
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(ch)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(data.tobytes())
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 def to_pcm16(path: str) -> bool:
     """Makes sure `path` is a 16-bit WAV (re-decoding 24/32-bit WAVs with miniaudio)."""
     import wave
@@ -783,7 +885,9 @@ def context_plan(req: dict, cfg: Config, ctx: ContextAudio):
     gender = vocal_gender(user_prompt)
     duration = int(round(min(360.0, max(10.0, ctx.seconds))))
 
-    if ctx.mode == "layer" and ctype == "vocal":
+    # A vocal part is always made with add-vocals, whatever the type ("vocal chops" as a Loop):
+    # Kie.ai's cover of a track is instrumental here, so its vocal stem would be silence.
+    if ctx.mode == "layer" and (ctype == "vocal" or wanted_stem(user_prompt, ctype) == "vocal"):
         inp = {"upload_url": "", "title": title, "negative_tags": negative, "style": style,
                "model": model, "audio_weight": audio_weight}
         if gender:
@@ -819,6 +923,21 @@ ERROR_CODES = {
     402: ("kie_out_of_credits", "Your Kie.ai account is out of credits."),
     429: ("rate_limited", "Kie.ai is rate-limiting requests. Wait a moment and try again."),
 }
+
+
+class step:
+    """Names the pipeline step in a Kie.ai error, so "Record does not exist" says where it happened."""
+
+    def __init__(self, what: str):
+        self.what = what
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, e, tb):
+        if isinstance(e, UpstreamError) and e.code not in (401, 402, 429) and not str(e).startswith(self.what):
+            raise UpstreamError(f"{self.what}: {e}", code=e.code, data=e.data, transient=e.transient) from None
+        return False
 
 
 def to_error(e: UpstreamError):
@@ -988,6 +1107,35 @@ class Bridge:
             self._sleep(job, interval)
             interval = min(self.poll_max, interval * 1.3)
 
+    def _separate(self, job: Job, task_id: str, clip: dict, kind: str, deadline: float) -> dict:
+        """Stem separation of a generated clip (docs.kie.ai/suno-api/separate-vocals).
+
+        Kie.ai separates by task_id + audio_id, or by audio_url. Results made from uploaded audio
+        (add-vocals, upload-and-cover) are refused by id with "Record does not exist", so the clip's
+        own link is used when the id route is refused or there is no clip id. A refused request
+        creates no task, so trying the second route can't charge twice."""
+        routes = []
+        if clip.get("id"):
+            routes.append(("task id", {"task_id": task_id, "audio_id": clip["id"], "type": kind}))
+        if clip.get("url"):
+            routes.append(("audio link", {"audio_url": clip["url"], "type": kind}))
+        if not routes:
+            raise UpstreamError("Kie.ai returned no clip to separate")
+        last = None
+        for i, (how, task_input) in enumerate(routes):
+            try:
+                sep_task = self._create(job, "ai-music-api/separate-vocals", task_input)
+            except UpstreamError as e:
+                if e.code in (401, 402) or i == len(routes) - 1:
+                    raise UpstreamError(f"Kie.ai stem separation: {e}", code=e.code, data=e.data,
+                                        transient=e.transient) from None
+                log(f"  {job.id[:8]}: stem separation by {how} refused ({e}); trying the {routes[i + 1][0]}")
+                last = e
+                continue
+            with step("Kie.ai stem separation"):
+                return self._wait_for_task(job, sep_task, deadline, "stem separation")
+        raise last
+
     def _create(self, job: Job, model: str, task_input: dict) -> str:
         attempt = 0
         while True:
@@ -1076,27 +1224,45 @@ class Bridge:
         deadline = time.time() + self.timeout_seconds + (240.0 if stem else 0.0)
         job.set(status="generating", progress=0.02)
         log(f"  {job.id[:8]}: uploading {ctx.seconds:.1f} s of track context to Kie.ai file storage")
-        upload_url = self.client.upload_file(ctx.path, job.id + ".wav")
+        with step("Uploading your track to Kie.ai"):
+            upload_url = self.client.upload_file(ctx.path, job.id + ".wav")
         self._check(job)
         task_input = dict(task_input, upload_url=upload_url)
         job.set(expected=150.0)
-        task_id, clip = self._generate(job, model, task_input, deadline, model.rsplit("/", 1)[-1])
+        name = model.rsplit("/", 1)[-1]
+        with step(f"Kie.ai {name}"):
+            task_id, clip = self._generate(job, model, task_input, deadline, name)
         final = os.path.join(self.audio_dir, job.id + ".wav")
 
         if stem:
             job.set(progress=0.6, started=time.time(), expected=90.0)
             kind = "separate_vocal" if stem in ("vocal", "instrumental") else "split_stem"
-            sep_task = self._create(job, "ai-music-api/separate-vocals",
-                                    {"task_id": task_id, "audio_id": clip["id"], "type": kind})
-            info = self._wait_for_task(job, sep_task, deadline, "stem separation")
-            stems = extract_stems({"r": info.get("resultJson"), "s": info.get("response"), "d": info})
-            if stem in stems:
-                log(f"  {job.id[:8]}: keeping the {stem} stem (of {', '.join(sorted(stems))})")
-                job.set(progress=0.93)
-                self._fetch_audio(job, stems[stem], final, tmp_paths)
-                return final
-            log(f"  {job.id[:8]}: no {stem} stem in the separation result ({', '.join(sorted(stems)) or 'none'}); "
-                f"returning the full result")
+            try:
+                info = self._separate(job, task_id, clip, kind, deadline)
+            except Cancelled:
+                raise
+            except UpstreamError as e:
+                if e.code in (401, 402):
+                    raise
+                # The generation is already paid for: hand it over rather than failing.
+                log(f"  {job.id[:8]}: Kie.ai couldn't separate the {stem} ({e}); returning the full result "
+                    f"(it also contains your track)")
+                info = None
+            if info is not None:
+                stems = extract_stems({"r": info.get("resultJson"), "s": info.get("response"), "d": info})
+                if stem in stems:
+                    log(f"  {job.id[:8]}: keeping the {stem} stem (of {', '.join(sorted(stems))})")
+                    job.set(progress=0.93)
+                    self._fetch_audio(job, stems[stem], final, tmp_paths)
+                    if is_silent(final):
+                        log(f"  {job.id[:8]}: the {stem} stem is silent (Kie.ai put no {stem} in it); "
+                            f"returning the full result instead")
+                    else:
+                        self._keep_part_with_sound(job, final, clip, ctx, tmp_paths, stem)
+                        return final
+                else:
+                    log(f"  {job.id[:8]}: no {stem} stem in the separation result ({', '.join(sorted(stems)) or 'none'}); "
+                        f"returning the full result")
 
         job.set(progress=0.92)
         self._deliver_clip(job, task_id, clip, deadline, final, tmp_paths)
@@ -1105,6 +1271,36 @@ class Bridge:
             if cut > 0 and to_pcm16(final) and cut_wav_start(final, cut):
                 log(f"  {job.id[:8]}: the result repeats your track first; cut {cut:.2f} s so only the new part remains")
         return final
+
+    def _keep_part_with_sound(self, job: Job, final: str, clip: dict, ctx: "ContextAudio", tmp_paths: list, what: str):
+        """Kie.ai often returns far more than the uploaded bars (a 78 s song for 8 bars) and the new
+        part may only start later, so keeping the first bars can give silence. Keep one context-length
+        window on the context's bar grid: the first one with real sound in it."""
+        info = wav_info(final)
+        if not info or not to_pcm16(final):
+            return
+        total = info[0]
+        if total < ctx.seconds + 0.5:
+            return
+        bars = ctx.bars if isinstance(ctx.bars, int) and ctx.bars > 0 else None
+        step = ctx.seconds / bars if bars else ctx.seconds / 4.0
+        phase = 0.0
+        if clip.get("url"):
+            mix = final + ".mix"
+            tmp_paths.append(mix)
+            try:
+                download(clip["url"], mix, self.allow_http_loopback)
+                phase = grid_phase(ctx.path, mix, step)
+            except Exception:
+                phase = 0.0
+        start = pick_window(final, ctx.seconds, step, phase)
+        if start is None:
+            return
+        if cut_wav_window(final, start, ctx.seconds):
+            where = (f"bars {int(round((start - phase) / step)) + 1}-{int(round((start - phase) / step)) + bars}"
+                     if bars else f"{start:.1f}-{start + ctx.seconds:.1f} s")
+            log(f"  {job.id[:8]}: Kie.ai returned {total:.1f} s for your {ctx.seconds:.1f} s; kept the {what} from "
+                f"{where} (in time with your track)")
 
     def _run(self, job: Job, pipeline, extra_tmp: list):
         tmp_paths = list(extra_tmp)

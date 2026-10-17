@@ -41,6 +41,13 @@ struct SessionState
 
     std::optional<ContextMeta> context;
 
+    // The user's own tempo / key (V2.1.1). Tempo: used instead of the DAW's when no context is
+    // captured (with a context, setting a tempo re-reads or re-fits the context itself).
+    // Key: used for prompts and shown instead of the detected key. -1 = detect.
+    std::optional<double> tempoOverride;
+    int keyRoot = -1;
+    bool keyMinor = false;
+
     juce::var toVar() const;
     static SessionState fromVar (const juce::var&);
     bool operator== (const SessionState&) const;

@@ -99,6 +99,16 @@ ArrangementOverlay::Hit ArrangementOverlay::hitTest (juce::Point<float> p) const
         h.dragHandle = true;
         return h;
     }
+    // Corner grips (top of a clip, at its edges) always stretch.
+    for (int i = 0; i < (int) view.clips.size(); ++i)
+        for (bool atStart : { false, true })
+            if (gripArea (i, atStart).expanded (2.0f).contains (p))
+            {
+                h.clip = i;
+                h.grip = true;
+                h.edge = atStart ? Drag::StretchStart : Drag::Stretch;
+                return h;
+            }
     for (int i = 0; i < (int) view.clips.size(); ++i)
     {
         const auto& c = view.clips[(size_t) i];
@@ -119,10 +129,32 @@ ArrangementOverlay::Hit ArrangementOverlay::hitTest (juce::Point<float> p) const
     return h;
 }
 
+juce::Rectangle<float> ArrangementOverlay::gripArea (int clip, bool atStart) const
+{
+    if (! juce::isPositiveAndBelow (clip, (int) view.clips.size()))
+        return {};
+    const auto& c = view.clips[(size_t) clip];
+    const float x0 = xForBeat (c.start), x1 = xForBeat (c.end());
+    if (x1 - x0 < 34.0f)
+        return {};                      // too narrow: the edges do it (Stretch mode / Alt)
+    const float w = 9.0f, h = 13.0f, y = 2.0f;
+    return atStart ? juce::Rectangle<float> (x0 + 2.0f, y, w, h) : juce::Rectangle<float> (x1 - 2.0f - w, y, w, h);
+}
+
+ArrangementOverlay::Drag ArrangementOverlay::resolveEdge (const Hit& h, bool alt) const
+{
+    if (h.grip)
+        return h.edge;
+    const bool stretch = stretchEdges != alt;
+    if (! stretch)
+        return h.edge;
+    return h.edge == Drag::TrimStart ? Drag::StretchStart : h.edge == Drag::TrimEnd ? Drag::Stretch : h.edge;
+}
+
 juce::MouseCursor ArrangementOverlay::getMouseCursor()
 {
     if (drag == Drag::Move || hover.strip || hover.dragHandle) return juce::MouseCursor::DraggingHandCursor;
-    if (drag == Drag::TrimStart || drag == Drag::TrimEnd || drag == Drag::Stretch || hover.edge != Drag::None)
+    if (drag == Drag::TrimStart || drag == Drag::TrimEnd || isStretch (drag) || hover.edge != Drag::None)
         return juce::MouseCursor::LeftRightResizeCursor;
     return juce::MouseCursor::NormalCursor;
 }
@@ -130,12 +162,14 @@ juce::MouseCursor ArrangementOverlay::getMouseCursor()
 void ArrangementOverlay::mouseMove (const juce::MouseEvent& e)
 {
     const auto h = hitTest (e.position);
-    if (h.clip != hover.clip || h.edge != hover.edge || h.strip != hover.strip || h.dragHandle != hover.dragHandle)
+    if (h.clip != hover.clip || h.edge != hover.edge || h.strip != hover.strip || h.dragHandle != hover.dragHandle || h.grip != hover.grip)
     {
         hover = h;
+        const auto other = stretchEdges ? juce::String ("Alt+drag to trim.") : juce::String ("Alt+drag to stretch.");
         setTooltip (h.dragHandle ? "Drag the processed sound into your DAW"
-                    : h.edge == Drag::TrimEnd ? "Drag to trim. Alt+drag to stretch the clip."
-                    : h.edge == Drag::TrimStart ? "Drag to trim the start"
+                    : h.grip ? "Drag to stretch the clip (time-stretch, pitch kept)"
+                    : h.edge == Drag::TrimEnd || h.edge == Drag::TrimStart
+                        ? (stretchEdges ? "Drag to stretch the clip. " : "Drag to trim the clip. ") + other
                     : h.strip ? "Drag to move this clip"
                     : "Drag to select. Right-click for split, fill, takes and more.");
         updateMouseCursor();
@@ -174,7 +208,7 @@ void ArrangementOverlay::mouseDown (const juce::MouseEvent& e)
     }
     if (h.clip >= 0 && h.edge != Drag::None)
     {
-        drag = (h.edge == Drag::TrimEnd && e.mods.isAltDown()) ? Drag::Stretch : h.edge;
+        drag = resolveEdge (h, e.mods.isAltDown());
         dragClip = h.clip;
         ghost = view.clips[(size_t) h.clip];
         return;
@@ -252,6 +286,17 @@ void ArrangementOverlay::mouseDrag (const juce::MouseEvent& e)
             ghost.stretch = src / juce::jmax (edit::minClipBeats, ghost.length);
             break;
         }
+        case Drag::StretchStart:
+        {
+            const auto& c = view.clips[(size_t) dragClip];
+            const double src = c.sourceLength();
+            const double end = c.end();
+            ghost = c;
+            ghost.length = juce::jlimit (src / edit::maxStretch, juce::jmin (src / edit::minStretch, end), end - juce::jmax (0.0, snapBeat (beat, free)));
+            ghost.start = end - ghost.length;
+            ghost.stretch = src / juce::jmax (edit::minClipBeats, ghost.length);
+            break;
+        }
         case Drag::None:
             break;
     }
@@ -267,7 +312,7 @@ void ArrangementOverlay::mouseUp (const juce::MouseEvent& e)
         return;
     if (! dragMoved)
     {
-        if (d == Drag::Select || d == Drag::Move || d == Drag::TrimStart || d == Drag::TrimEnd)
+        if (d == Drag::Select || d == Drag::Move || d == Drag::TrimStart || d == Drag::TrimEnd || isStretch (d))
         {
             setSelection (std::nullopt);
             if (onSeek)
@@ -285,6 +330,7 @@ void ArrangementOverlay::mouseUp (const juce::MouseEvent& e)
             case Drag::TrimStart: session.editTrim (dragClip, true, ghost.start); break;
             case Drag::TrimEnd:   session.editTrim (dragClip, false, ghost.end()); break;
             case Drag::Stretch:   session.editStretch (dragClip, ghost.end()); break;
+            case Drag::StretchStart: session.editStretchStart (dragClip, ghost.start); break;
             default: break;
         }
     }
@@ -354,8 +400,10 @@ void ArrangementOverlay::paint (juce::Graphics& g)
             if (std::abs (c.gainDb) > 0.05f) label << "  " << (c.gainDb > 0 ? "+" : "") << juce::String (c.gainDb, 1) << " dB";
             g.setColour (colours::text.withAlpha (0.85f));
             g.setFont (font (type::meta, Weight::Medium));
-            g.drawText (fitText (label, font (type::meta, Weight::Medium), strip.getWidth() - 10.0f), strip.withTrimmedLeft (6.0f),
-                        juce::Justification::centredLeft, false);
+            const bool grips = ! gripArea (i, true).isEmpty();            // leave room for the stretch grips
+            const float left = grips ? 15.0f : 6.0f, right = grips ? 15.0f : 4.0f;
+            g.drawText (fitText (label, font (type::meta, Weight::Medium), strip.getWidth() - left - right),
+                        strip.withTrimmedLeft (left).withTrimmedRight (right), juce::Justification::centredLeft, false);
         }
     }
 
@@ -367,15 +415,55 @@ void ArrangementOverlay::paint (juce::Graphics& g)
         g.fillRect (x0, area.getY(), x1 - x0, area.getHeight());
         g.setColour (colours::accent);
         g.drawRect (juce::Rectangle<float> (x0, area.getY(), x1 - x0, area.getHeight()), 1.5f);
+        if (isStretch (drag))
+        {
+            // How fast it now plays, in a tag at the top of the ghost.
+            const auto text = juce::String (ratioText (ghost.stretch)) + "  stretch";
+            const auto f = font (type::meta, Weight::SemiBold);
+            const float tw = (float) juce::GlyphArrangement::getStringWidthInt (f, text) + 14.0f;
+            auto tag = juce::Rectangle<float> (tw, 18.0f).withCentre ({ (x0 + x1) * 0.5f, area.getY() + (float) stripHeight + 14.0f });
+            g.setColour (colours::accent);
+            g.fillRoundedRectangle (tag, radius::control);
+            g.setColour (colours::background);
+            g.setFont (f);
+            g.drawText (text, tag, juce::Justification::centred, false);
+        }
     }
 
-    // Hovered edge
-    if (hover.clip >= 0 && hover.edge != Drag::None && drag == Drag::None && juce::isPositiveAndBelow (hover.clip, (int) view.clips.size()))
+    // Stretch grips at the top corners of each clip: faint at rest, clear when hovered.
+    if (drag == Drag::None)
+        for (int i = 0; i < (int) view.clips.size(); ++i)
+            for (bool atStart : { true, false })
+            {
+                const auto r = gripArea (i, atStart);
+                if (r.isEmpty())
+                    continue;
+                const bool hot = hover.grip && hover.clip == i && (hover.edge == Drag::StretchStart) == atStart;
+                const float alpha = hot ? 1.0f : hover.clip == i ? 0.7f : 0.32f;
+                g.setColour ((hot ? colours::accent : colours::raised).withAlpha (alpha));
+                g.fillRoundedRectangle (r, radius::small);
+                g.setColour ((hot ? colours::background : colours::text).withAlpha (hot ? 0.9f : 0.75f * alpha));
+                for (float dx : { -1.5f, 1.5f })
+                    g.fillRect (r.getCentreX() + dx - 0.5f, r.getY() + 3.5f, 1.0f, r.getHeight() - 7.0f);
+            }
+
+    // Hovered edge (an accent bar; in stretch it gets arrow ticks)
+    if (hover.clip >= 0 && hover.edge != Drag::None && ! hover.grip && drag == Drag::None && juce::isPositiveAndBelow (hover.clip, (int) view.clips.size()))
     {
         const auto& c = view.clips[(size_t) hover.clip];
-        const float x = xForBeat (hover.edge == Drag::TrimStart ? c.start : c.end());
+        const bool atStart = hover.edge == Drag::TrimStart || hover.edge == Drag::StretchStart;
+        const float x = xForBeat (atStart ? c.start : c.end());
         g.setColour (colours::accent);
         g.fillRoundedRectangle (x - 1.5f, area.getCentreY() - 14.0f, 3.0f, 28.0f, 1.5f);
+        if (resolveEdge (hover, juce::ModifierKeys::getCurrentModifiers().isAltDown()) == Drag::Stretch
+            || resolveEdge (hover, juce::ModifierKeys::getCurrentModifiers().isAltDown()) == Drag::StretchStart)
+        {
+            juce::Path arrows;
+            const float cy = area.getCentreY();
+            arrows.startNewSubPath (x - 5.0f, cy - 3.5f); arrows.lineTo (x - 8.5f, cy); arrows.lineTo (x - 5.0f, cy + 3.5f);
+            arrows.startNewSubPath (x + 5.0f, cy - 3.5f); arrows.lineTo (x + 8.5f, cy); arrows.lineTo (x + 5.0f, cy + 3.5f);
+            g.strokePath (arrows, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
     }
 
     // Selection

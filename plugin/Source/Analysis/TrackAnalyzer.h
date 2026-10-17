@@ -15,8 +15,16 @@ namespace analysis
 
     // ---- building blocks (exposed for tests) ----
     struct KeyEstimate { int root = -1; bool minor = false; double confidence = 0.0; bool known = false; };
-    KeyEstimate estimateKey (const std::array<double, 12>& chroma);
+    /** `bass` (optional) is the pitch-class profile of the bass register: the bass mostly sits on
+        the tonic, which is what tells a minor key from its relative major (same notes). */
+    KeyEstimate estimateKey (const std::array<double, 12>& chroma, const std::array<double, 12>* bass = nullptr);
     std::array<double, 12> chromaFromSpectrum (const std::vector<double>& magnitude, double sampleRate, int fftSize);
+
+    /** Pitch-class evidence summed over analysis frames (each frame counts once, so a few loud
+        hits can't outvote the harmony). Treble: 100 Hz - 5 kHz with harmonic summation; bass: the
+        lowest clear note (25 - 260 Hz) of each frame. */
+    struct Chroma { std::array<double, 12> treble {}, bass {}; int frames = 0; };
+    void accumulateFrameChroma (const float* magnitude, int bins, double sampleRate, int fftSize, Chroma& into);
 
     struct StereoEstimate { double sideToMid = 0.0; double correlation = 1.0; StereoWidth width = StereoWidth::Narrow; };
     StereoEstimate estimateStereo (const juce::AudioBuffer<float>& audio);

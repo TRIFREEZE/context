@@ -78,12 +78,75 @@ std::array<double, 12> chromaFromSpectrum (const std::vector<double>& mag, doubl
     return chroma;
 }
 
-KeyEstimate estimateKey (const std::array<double, 12>& chroma)
+void accumulateFrameChroma (const float* mag, int bins, double sampleRate, int fftSize, Chroma& into)
+{
+    const double binHz = sampleRate / fftSize;
+    auto pcOf = [] (double freq) { return ((int) std::lround (69.0 + 12.0 * std::log2 (freq / 440.0)) % 12 + 12) % 12; };
+    auto peakFreq = [&] (int i)
+    {
+        const double a = mag[i - 1], b = mag[i], c = mag[i + 1];
+        const double denom = a - 2 * b + c;
+        const double offset = std::abs (denom) > 1e-12 ? 0.5 * (a - c) / denom : 0.0;
+        return (i + juce::jlimit (-0.5, 0.5, offset)) * binHz;
+    };
+    auto isPeak = [&] (int i) { return mag[i] >= mag[i - 1] && mag[i] >= mag[i + 1] && mag[i] >= mag[i - 2] && mag[i] >= mag[i + 2]; };
+
+    // ---- treble: tonal partials, each also voting (less) for the fundamentals it could belong to
+    {
+        const int lo = juce::jmax (3, (int) (100.0 / binHz)), hi = juce::jmin (bins - 3, (int) (5000.0 / binHz));
+        float maxMag = 0.0f;
+        for (int i = lo; i <= hi; ++i) maxMag = juce::jmax (maxMag, mag[i]);
+        std::array<double, 12> c {};
+        if (maxMag > 1.0e-9f)
+            for (int i = lo; i <= hi; ++i)
+            {
+                if (mag[i] < maxMag * 0.05f || ! isPeak (i))
+                    continue;
+                const double f = peakFreq (i);
+                const double w = std::sqrt ((double) mag[i]);           // compress: loud partials don't dominate
+                double hw = 1.0;
+                for (int h = 1; h <= 4; ++h, hw *= 0.6)
+                    if (f / h >= 50.0)
+                        c[(size_t) pcOf (f / h)] += w * hw;
+            }
+        const double sum = std::accumulate (c.begin(), c.end(), 0.0);
+        if (sum > 0.0)
+        {
+            for (int p = 0; p < 12; ++p) into.treble[(size_t) p] += c[(size_t) p] / sum;
+            ++into.frames;
+        }
+    }
+    // ---- bass: the lowest clear note of the frame (the 808 / bass line, or the lowest voice)
+    {
+        const int lo = juce::jmax (3, (int) (25.0 / binHz)), hi = juce::jmin (bins - 3, (int) (260.0 / binHz));
+        float maxMag = 0.0f;
+        for (int i = lo; i <= hi; ++i) maxMag = juce::jmax (maxMag, mag[i]);
+        if (maxMag > 1.0e-9f)
+            for (int i = lo; i <= hi; ++i)
+                if (mag[i] >= maxMag * 0.3f && isPeak (i))
+                {
+                    into.bass[(size_t) pcOf (peakFreq (i))] += 1.0;
+                    break;
+                }
+    }
+}
+
+KeyEstimate estimateKey (const std::array<double, 12>& chroma, const std::array<double, 12>* bass)
 {
     KeyEstimate k;
     const double total = std::accumulate (chroma.begin(), chroma.end(), 0.0);
     if (total <= 0)
         return k;
+
+    // Bass evidence: how much of the bass sits on each pitch class (0..1 of the strongest).
+    std::array<double, 12> bassNorm {};
+    if (bass != nullptr)
+    {
+        const double bmax = *std::max_element (bass->begin(), bass->end());
+        const double bsum = std::accumulate (bass->begin(), bass->end(), 0.0);
+        if (bmax > 0.0 && bmax / bsum > 0.2)                 // a real bass line, not rumble
+            for (int p = 0; p < 12; ++p) bassNorm[(size_t) p] = (*bass)[(size_t) p] / bmax;
+    }
 
     double scores[24];
     for (int root = 0; root < 12; ++root)
@@ -98,9 +161,14 @@ KeyEstimate estimateKey (const std::array<double, 12>& chroma)
         scores[12 + root] = pearson (chroma.data(), rotatedMin, 12);
     }
 
+    // Harmony picks the scale; the bass picks the tonic within it.
+    double totalScore[24];
+    for (int i = 0; i < 24; ++i)
+        totalScore[i] = scores[i] + 0.3 * bassNorm[(size_t) (i % 12)];
+
     int best = 0;
     for (int i = 1; i < 24; ++i)
-        if (scores[i] > scores[best])
+        if (totalScore[i] > totalScore[best])
             best = i;
 
     k.root = best % 12;
@@ -111,10 +179,10 @@ KeyEstimate estimateKey (const std::array<double, 12>& chroma)
     double runnerUp = -1.0;
     for (int i = 0; i < 24; ++i)
         if (i != best && i != relative)
-            runnerUp = juce::jmax (runnerUp, scores[i]);
+            runnerUp = juce::jmax (runnerUp, totalScore[i]);
 
     const double strength = juce::jlimit (0.0, 1.0, scores[best]);
-    const double margin = juce::jlimit (0.0, 1.0, (scores[best] - runnerUp) / 0.25);
+    const double margin = juce::jlimit (0.0, 1.0, (totalScore[best] - runnerUp) / 0.25);
     k.confidence = juce::jlimit (0.0, 1.0, 0.6 * strength + 0.4 * margin);
     k.known = k.confidence >= 0.55 && scores[best] >= 0.5;   // a single sustained tone scores ~0.5: reported as Unknown
     return k;
@@ -264,7 +332,8 @@ TrackAnalysis analyze (const juce::AudioBuffer<float>& audio, double sampleRate,
     std::vector<float> frame ((size_t) fftSize * 2);
     std::vector<double> power ((size_t) fftSize / 2 + 1, 0.0), magnitude ((size_t) fftSize / 2 + 1, 0.0);
     int frames = 0;
-    const int hop = fftSize / 2;
+    Chroma chroma;
+    const int hop = fftSize / 4;
     for (int start = 0; start + fftSize <= n || (frames == 0 && start == 0); start += hop)
     {
         std::fill (frame.begin(), frame.end(), 0.0f);
@@ -272,6 +341,7 @@ TrackAnalysis analyze (const juce::AudioBuffer<float>& audio, double sampleRate,
         std::copy (mono.begin() + start, mono.begin() + start + len, frame.begin());
         window.multiplyWithWindowingTable (frame.data(), (size_t) fftSize);
         fft.performFrequencyOnlyForwardTransform (frame.data(), true);
+        accumulateFrameChroma (frame.data(), (int) power.size(), sampleRate, fftSize, chroma);
         for (size_t b = 0; b < power.size(); ++b)
         {
             const double m = frame[b];
@@ -323,7 +393,8 @@ TrackAnalysis analyze (const juce::AudioBuffer<float>& audio, double sampleRate,
 
     // Key
     for (auto& m : magnitude) m /= frames;
-    const auto key = estimateKey (chromaFromSpectrum (magnitude, sampleRate, fftSize));
+    const auto key = chroma.frames > 0 ? estimateKey (chroma.treble, &chroma.bass)
+                                       : estimateKey (chromaFromSpectrum (magnitude, sampleRate, fftSize));
     t.keyKnown = key.known;
     t.keyRoot = key.root;
     t.minor = key.minor;

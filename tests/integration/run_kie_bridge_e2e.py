@@ -286,8 +286,13 @@ def main():
             check(av.get("vocal_gender") == "f" and av.get("style") and av.get("title") and av.get("negative_tags")
                   and "/files/context-bridge/" in av.get("upload_url", ""),
                   f"add-vocals gets the uploaded context, style, title, gender ({av})")
-            check(sent[2]["input"].get("type") == "separate_vocal" and sent[2]["input"].get("task_id"),
-                  "separation uses the add-vocals task + clip, 2-stem mode")
+            sep = sent[2]["input"]
+            check(sep.get("type") == "separate_vocal" and "/cdn/" in str(sep.get("audio_url", "")) and "audio_id" not in sep,
+                  f"Kie refuses to separate an add-vocals result by task id ('Record does not exist'), so the bridge "
+                  f"separates the result's audio link, 2-stem mode ({sep})")
+            blog = open(bproc.log_path).read()
+            check("stem separation by task id refused (Record does not exist); trying the audio link" in blog,
+                  "the bridge window says why it switched to the audio link")
             check(sent[0]["input"]["bytes"] == len(ctx_wav), "the exact context WAV is uploaded")
         if mp3_ok:
             check(s.get("status") == "complete", f"vocal layer completes ({s})")
@@ -307,10 +312,45 @@ def main():
             cv = sent[1]["input"]
             check(cv.get("instrumental") is True and cv.get("duration") == 10 and "prompt" not in cv,
                   f"cover is instrumental, duration clamped to Kie's 10 s minimum ({cv})")
-            check(sent[2]["input"].get("type") == "split_stem", "instrument layer separates into stems")
+            check(sent[2]["input"].get("type") == "split_stem" and sent[2]["input"].get("audio_url"),
+                  "instrument layer separates the cover's audio link into stems")
         if mp3_ok:
             check(s.get("status") == "complete", f"instrument layer completes ({s})")
             check("keeping the keyboard stem" in open(bproc.log_path).read(), "'piano' picks the keyboard stem")
+
+        # "Vocal chops" asked for as a Loop is still a vocal: add-vocals, never an instrumental cover
+        # (whose vocal stem is silence - the blank result a user got).
+        before = len(upstream_log(api))
+        st, s = generate(bridge, "dark vocal chops", "loop", audioContext=actx, contextMode="layer")
+        models = [x["model"] for x in upstream_log(api)[before:]]
+        check(models[:3] == ["upload", "ai-music-api/add-vocals", "ai-music-api/separate-vocals"],
+              f"a Loop of vocal chops is layered with add-vocals ({models})")
+
+        # Kie.ai returns a long song whose vocal starts late: keep the bars with the vocal, on the grid.
+        st, s = generate(bridge, "female vocal hook #late", "vocal", audioContext=actx, contextMode="layer")
+        check(s.get("status") == "complete", f"late-vocal layer completes ({s})")
+        if s.get("status") == "complete":
+            ok, data = fetch_wav(bridge, s)
+            secs = wav_seconds(data) if ok else 0
+            check(ok and abs(secs - 4.0) < 0.02, f"one context length is kept ({secs:.3f} s)")
+            if ok:
+                with wave.open(io.BytesIO(data)) as w:
+                    frames = w.readframes(w.getnframes())
+                peak = max(abs(int.from_bytes(frames[i:i + 2], "little", signed=True)) for i in range(0, len(frames), 2 * 97))
+                check(peak > 3000, f"the kept part has the vocal in it, not the silent intro (peak {peak})")
+            check("kept the vocal from bars 11-12" in open(bproc.log_path).read(),
+                  "the bridge window says which bars were kept")
+
+        # Separation refused by both routes: the paid generation is still delivered (whole mix).
+        if mp3_ok:
+            st, s = generate(bridge, "soft male vocal #nosep", "vocal", audioContext=actx, contextMode="layer")
+            check(s.get("status") == "complete", f"if Kie.ai can't separate at all, the full result is still delivered ({s})")
+            check("couldn't separate the vocal" in open(bproc.log_path).read(), "the bridge window says the result includes the track")
+
+        # Errors name the step that failed.
+        st, s = generate(bridge, "vocal #upfail", "vocal", audioContext=actx, contextMode="layer")
+        check(s.get("status") == "failed" and s.get("error", "").startswith("Kie.ai add-vocals:"),
+              f"a failed step is named in the error ({s.get('error')})")
 
         before = len(upstream_log(api))
         st, s = generate(bridge, "lofi tape version", "loop", audioContext=actx, contextMode="cover")

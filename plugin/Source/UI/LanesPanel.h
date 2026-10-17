@@ -4,6 +4,7 @@
 #include "WaveformLane.h"
 #include "ArrangementOverlay.h"
 #include "SelectionBar.h"
+#include "TempoKeySheets.h"
 
 namespace context { class ContextAudioProcessor; }
 
@@ -23,6 +24,8 @@ public:
     /** Editing keys (S, Delete, F, Ctrl+C/X/V/D/A, G, Esc). True if used. */
     bool handleKey (const juce::KeyPress&);
     ArrangementOverlay& arrangement() { return overlay; }
+    /** The right-click menu of the sound lane (public for the screenshot tests). */
+    void showEditMenu (juce::Point<int> inOverlay);
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -33,7 +36,6 @@ private:
     TimelineView computeTimeline() const;
     void showContextMenu();
     void showOutputMenu();
-    void showEditMenu (juce::Point<int>);
     void showTakesMenu();
     void showFillFromMenu (juce::Component* target);
     void addOutputItems (juce::PopupMenu&, int base);
@@ -47,6 +49,7 @@ private:
     void layoutLaneHeader (juce::Rectangle<int> area, bool context);
     juce::String outputDetail() const;
     juce::String fitSummary() const;
+    juce::String bpmLabel() const;
 
     ContextAudioProcessor& processor;
 
@@ -56,6 +59,8 @@ private:
     ArrangementOverlay overlay;
     SelectionBar selectionBar;
     juce::ComboBox snap;
+    SegmentedControl edgeMode;            // what dragging a clip edge does: Trim | Stretch
+    void setStretchEdges (bool);
     juce::TextButton takesButton;
 
     juce::TextButton captureButton { "Capture" }, loadButton { "Load sample" };
@@ -63,7 +68,7 @@ private:
     LaneToggle ctxMute { "M", colours::warn }, ctxSolo { "S", colours::accent }, outMute { "M", colours::warn }, outSolo { "S", colours::accent };
     juce::Slider ctxGain, outGain;
     IconButton ctxMenu { IconButton::Icon::More, "Context options" }, outMenu { IconButton::Icon::More, "Sample options" };
-    juce::Label manualTempo;
+    ValueChip bpmChip, keyChip;           // click to set the tempo / key
 
     SegmentedControl fitMode;
     juce::ComboBox algorithm;

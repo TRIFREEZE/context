@@ -55,6 +55,7 @@ struct FitReport
     double trimmedStartSeconds = 0.0;   // dead space removed before the first sound
     double trimmedEndSeconds = 0.0;     // ... and after the last
     bool aligned = false;               // source was generated on the context (kept in place)
+    int alignedStartBar = 0;            // aligned and longer than the target: first kept bar (0 = from the start)
 };
 
 struct FitRequest

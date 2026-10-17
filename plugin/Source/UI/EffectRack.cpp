@@ -342,7 +342,7 @@ void EffectRackPanel::showAddMenu()
     m.addSeparator();
     m.addItem (1000, "Clear all effects", chain.size() > 0);
     juce::Component::SafePointer<EffectRackPanel> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton).withMinimumWidth (180), [safe, ids] (int r)
+    showMenu (m, *this, juce::PopupMenu::Options().withTargetComponent (&addButton).withMinimumWidth (180), [safe, ids] (int r)
     {
         if (safe == nullptr || r == 0) return;
         if (r == 1000)
@@ -386,7 +386,7 @@ void EffectRackPanel::chipMenu (int index)
     m.addSeparator();
     m.addItem (6, "Remove");
     juce::Component::SafePointer<EffectRackPanel> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (chips[index]), [safe, index] (int r)
+    showMenu (m, *this, juce::PopupMenu::Options().withTargetComponent (chips[index]), [safe, index] (int r)
     {
         if (safe == nullptr) return;
         auto& c = safe->chain;

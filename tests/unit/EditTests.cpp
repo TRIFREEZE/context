@@ -128,6 +128,27 @@ public:
                 expect (std::isfinite (rs.getSample (0, i)));
             for (size_t i = 0; i + 1 < s.clips.size(); ++i)
                 expect (s.clips[i].end() <= s.clips[i + 1].start + 1.0e-9, "no overlaps");
+
+            // Stretch from the start edge: the end stays, the audio is spread over the new length.
+            auto st = edit::splitAt ({}, base, total, 8.0);                     // [0,8) [8,32)
+            st = edit::splitAt (st, base, total, 16.0);                         // [0,8) [8,16) [16,32)
+            st = edit::stretchClipStart (st, base, total, 1, 4.0);             // middle clip now [4,16)
+            int mid = -1;
+            for (int i = 0; i < (int) st.clips.size(); ++i)
+                if (std::abs (st.clips[(size_t) i].end() - 16.0) < 1.0e-9) mid = i;
+            expect (mid >= 0, "the stretched clip still ends on beat 16");
+            if (mid >= 0)
+            {
+                const auto& c = st.clips[(size_t) mid];
+                expectWithinAbsoluteError (c.start, 4.0, 1.0e-9);
+                expectWithinAbsoluteError (c.stretch, 8.0 / 12.0, 1.0e-9, "8 beats of audio over 12 beats");
+                expectWithinAbsoluteError (c.offset, 8.0, 1.0e-9, "it still starts with the same audio");
+            }
+            expect (st.clips[0].end() <= 4.0 + 1.0e-9, "the clip before was cut where the stretched one now starts");
+            const auto squeezed = edit::stretchClipStart (st, base, total, mid, 15.9);
+            for (const auto& c : squeezed.clips)
+                if (std::abs (c.end() - 16.0) < 1.0e-9)
+                    expect (c.stretch <= edit::maxStretch + 1.0e-9, "never faster than 4x");
         }
 
         beginTest ("Copy, paste, duplicate; snapping; clip at position");

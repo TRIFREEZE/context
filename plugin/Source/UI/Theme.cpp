@@ -88,7 +88,7 @@ ContextLookAndFeel::ContextLookAndFeel()
     setColour (juce::ComboBox::textColourId, text);
     setColour (juce::ComboBox::outlineColourId, border);
     setColour (juce::ComboBox::arrowColourId, faint);
-    setColour (juce::PopupMenu::backgroundColourId, panel);
+    setColour (juce::PopupMenu::backgroundColourId, panel.withAlpha (0.99f));   // not opaque: rounded corners
     setColour (juce::PopupMenu::textColourId, text);
     setColour (juce::PopupMenu::headerTextColourId, faint);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, hover);
@@ -316,9 +316,20 @@ void ContextLookAndFeel::positionComboBoxText (juce::ComboBox& box, juce::Label&
 
 void ContextLookAndFeel::drawPopupMenuBackground (juce::Graphics& g, int w, int h)
 {
-    g.fillAll (colours::panel);
+    // Rounded like every other surface (the menu window is transparent, see the colour above).
+    auto r = juce::Rectangle<float> (0, 0, (float) w, (float) h);
+    g.setColour (colours::panel);
+    g.fillRoundedRectangle (r, radius::panel);
     g.setColour (colours::border);
-    g.drawRect (0, 0, w, h, 1);
+    g.drawRoundedRectangle (r.reduced (0.5f), radius::panel, 1.0f);
+}
+
+void showMenu (juce::PopupMenu& menu, juce::Component& owner, juce::PopupMenu::Options options, std::function<void (int)> onResult)
+{
+    menu.setLookAndFeel (&owner.getLookAndFeel());
+    if (auto* top = owner.getTopLevelComponent(); top != nullptr && top != &owner)
+        options = options.withParentComponent (top);
+    menu.showMenuAsync (options, [cb = std::move (onResult)] (int r) { if (cb) cb (r); });
 }
 
 juce::Font ContextLookAndFeel::getPopupMenuFont()
@@ -328,7 +339,10 @@ juce::Font ContextLookAndFeel::getPopupMenuFont()
 
 juce::PopupMenu::Options ContextLookAndFeel::getOptionsForComboBoxPopupMenu (juce::ComboBox& box, juce::Label& label)
 {
-    return LookAndFeel_V4::getOptionsForComboBoxPopupMenu (box, label).withStandardItemHeight (26);
+    auto o = LookAndFeel_V4::getOptionsForComboBoxPopupMenu (box, label).withStandardItemHeight (26);
+    if (auto* top = box.getTopLevelComponent(); top != nullptr && top != &box && top->isShowing())
+        o = o.withParentComponent (top);
+    return o;
 }
 
 void ContextLookAndFeel::drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics& g, const juce::Path& path, juce::Image&)

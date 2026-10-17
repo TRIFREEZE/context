@@ -74,6 +74,7 @@ public:
         bool useTrackContext = true;
         bool sendAudioContext = false;
         juce::String contextMode = "layer";      // how the bridge uses the track context
+        bool stretchEdges = false;               // dragging a clip edge stretches instead of trimming
         juce::String tab = "generate";
         juce::String selectedResultId;
     };

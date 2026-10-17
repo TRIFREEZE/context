@@ -277,7 +277,8 @@ void ContextAudioProcessorEditor::showShortcuts()
                    "Original / processed|A", "Capture 8 bars|R", "Generate|Ctrl+Enter", "Undo|Ctrl+Z", "Redo|Ctrl+Shift+Z",
                    "Select all of the sound|Ctrl+A", "Split at playhead or selection|S", "Delete selection|Del",
                    "Fill selection with a new take|F", "Copy / cut / paste|Ctrl+C X V", "Duplicate selection|Ctrl+D",
-                   "Snap to grid on / off|G", "Clear selection|Esc", "Pages|Ctrl+1 2 3" };
+                   "Snap to grid on / off|G", "Clip edges: trim / stretch|T", "Other edge mode while dragging|Alt",
+                   "Clear selection|Esc", "Pages|Ctrl+1 2 3" };
     const int rows = (card->rows.size() + 1) / 2;
     ui::Sheet::show (*this, "Keyboard shortcuts",
                      "Shortcuts work when the plugin window has focus (click an empty spot first). In FL Studio, "

@@ -25,6 +25,7 @@ public:
     bool handleShortcut (const juce::KeyPress&);
     std::function<void()> onShowShortcuts;
     LanesPanel& getLanes() { return lanes; }
+    EffectRackPanel& getEffects() { return rack; }
 
     void paint (juce::Graphics&) override;
     void resized() override;

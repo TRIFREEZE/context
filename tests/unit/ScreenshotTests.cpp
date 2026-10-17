@@ -3,6 +3,7 @@
 #include "TestSupport.h"
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "UI/TempoKeySheets.h"
 #include "Generation/SynthAudio.h"
 
 namespace context::test
@@ -77,6 +78,55 @@ public:
         logMessage ("  snapshot: " + out.getFullPathName());
     }
 
+    void snapWithMenu (juce::AudioProcessorEditor& ed, const juce::PopupMenu& menu, juce::Point<int> at, int highlighted, const juce::String& name)
+    {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+        auto img = ed.createComponentSnapshot (ed.getLocalBounds());
+        auto& lf = ed.getLookAndFeel();
+        const int border = lf.getPopupMenuBorderSize();
+        struct Row { const juce::PopupMenu::Item* item; int h; };
+        std::vector<Row> rows;
+        int w = 0, h = 0;
+        for (juce::PopupMenu::MenuItemIterator it (menu); it.next();)
+        {
+            auto& item = it.getItem();
+            int iw = 0, ih = 0;
+            if (item.isSectionHeader)
+            {
+                iw = juce::GlyphArrangement::getStringWidthInt (lf.getPopupMenuFont(), item.text) + 30;
+                ih = 22;
+            }
+            else
+                lf.getIdealPopupMenuItemSize (item.text, item.isSeparator, 26, iw, ih);
+            rows.push_back ({ &item, ih });
+            w = juce::jmax (w, iw);
+            h += ih;
+        }
+        w = juce::jmax (w + border * 2, 200);
+        h += border * 2;
+        {
+            juce::Graphics g (img);
+            g.setOrigin (at);
+            lf.drawPopupMenuBackground (g, w, h);
+            int y = border, index = 0;
+            for (auto& r : rows)
+            {
+                const juce::Rectangle<int> area (border, y, w - border * 2, r.h);
+                if (r.item->isSectionHeader)
+                    lf.drawPopupMenuSectionHeader (g, area, r.item->text);
+                else
+                    lf.drawPopupMenuItem (g, area, r.item->isSeparator, r.item->isEnabled, index == highlighted, r.item->isTicked,
+                                          r.item->subMenu != nullptr, r.item->text, r.item->shortcutKeyDescription, nullptr, nullptr);
+                y += r.h;
+                ++index;
+            }
+        }
+        auto out = isolatedRoot().getChildFile ("screen-" + name + ".png");
+        juce::FileOutputStream os (out);
+        juce::PNGImageFormat().writeImageToStream (img, os);
+        logMessage ("  snapshot: " + out.getFullPathName());
+    }
+
     void runTest() override
     {
         beginTest ("Workspace states");
@@ -121,6 +171,17 @@ public:
         s.generationArrived (r2);
         waitUntil ([&] { auto t = s.takes(); return t.size() == 2 && t[0].ready && t[1].ready && ! s.fitStatus().rendering; }, 30000);
         snap (*ed, "loaded");
+        if (auto* e = dynamic_cast<ContextAudioProcessorEditor*> (ed.get()))
+        {
+            ui::showTempoSheet (e->getWorkspace().getLanes(), p);
+            snap (*ed, "sheet-tempo");
+            e->closeSheet();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+            ui::showKeySheet (e->getWorkspace().getLanes(), p);
+            snap (*ed, "sheet-key");
+            e->closeSheet();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+        }
 
         s.requestFill (12.0, 20.0);
         s.generationArrived (synthResult (p, "screen-3", "glassy pluck melody, dark, minor", 13, 13.7));
@@ -140,6 +201,37 @@ public:
             e->getWorkspace().getLanes().arrangement().setSelection (std::make_pair (20.0, 26.0));
             snap (*ed, "selection");
             e->getWorkspace().getLanes().arrangement().setSelection (std::nullopt);
+        }
+        {
+            // Menus: drawn with the same LookAndFeel calls JUCE's menu window makes (a real menu
+            // window needs a display, which the headless test machine doesn't have).
+            juce::PopupMenu m, from, gain;
+            m.addItem (1, "Split at selection edges");
+            m.addItem (2, "Delete selection");
+            m.addSeparator();
+            m.addItem (3, "Fill selection with a new take");
+            from.addItem (100, "Take 1");
+            m.addSubMenu ("Fill selection from", from);
+            m.addSeparator();
+            m.addItem (4, "Cut", true, false);
+            m.addItem (5, "Copy");
+            m.addItem (6, "Paste at playhead", false);
+            m.addItem (7, "Duplicate selection");
+            m.addSeparator();
+            gain.addItem (300, "0 dB", true, true);
+            m.addSubMenu ("Clip level", gain);
+            snapWithMenu (*ed, m, { 700, 330 }, 3, "menu-edit");
+
+            juce::PopupMenu fxm;
+            fxm.addSectionHeader ("Tone");
+            fxm.addItem (1, "EQ");
+            fxm.addItem (2, "Saturation", true, true);
+            fxm.addSectionHeader ("Space");
+            fxm.addItem (3, "Reverb");
+            fxm.addItem (4, "Delay");
+            fxm.addSeparator();
+            fxm.addItem (1000, "Clear all effects");
+            snapWithMenu (*ed, fxm, { 320, 560 }, 2, "menu-effects");
         }
         ed->setSize (980, 700);
         snap (*ed, "edited-980");
@@ -172,6 +264,38 @@ public:
             snap (*ed, "settings");
         }
         expect (true);
+
+        beginTest ("Sound lane while generating");
+        {
+            for (bool withTake : { false, true })
+            {
+                ui::WaveformLane lane (ui::colours::waveform, true);
+                lane.setSize (880, 170);
+                ui::TimelineView tv;
+                tv.sampleRate = 48000.0;
+                tv.tempo = { 140.0, {} };
+                tv.lengthSamples = musical::samplesForBars (8, tv.tempo, tv.sampleRate);
+                lane.setTimeline (tv);
+                if (withTake)
+                {
+                    juce::AudioBuffer<float> a (2, (int) tv.lengthSamples);
+                    for (int i = 0; i < a.getNumSamples(); ++i)
+                    {
+                        const float v = beatSample (i, 48000.0, 140.0) * 0.8f;
+                        a.setSample (0, i, v);
+                        a.setSample (1, i, v);
+                    }
+                    lane.setPeaks (WaveformPeaks::build (a, 48000.0), tv.lengthSamples);
+                }
+                lane.setGenerating (true, "Sending your 8 bars (Layer)...", withTake ? 0.62 : 0.38);
+                const auto img = lane.createComponentSnapshot (lane.getLocalBounds());
+                auto out = isolatedRoot().getChildFile (juce::String ("screen-generating") + (withTake ? "-over-take" : "") + ".png");
+                juce::FileOutputStream os (out);
+                juce::PNGImageFormat().writeImageToStream (img, os);
+                logMessage ("  snapshot: " + out.getFullPathName());
+            }
+            expect (true);
+        }
     }
 };
 

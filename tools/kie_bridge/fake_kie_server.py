@@ -12,7 +12,7 @@ bridge shows up as a failure.
     python fake_kie_server.py --port 0 --key test-key --mp3 tests/fixtures/kie_test_tone.mp3
                               [--shape response|resultJson|sunoData]
 
-Prompt triggers: #upfail #sensitive #credits #nowav #already #flakyup #badkey
+Prompt triggers: #upfail #sensitive #credits #nowav #already #flakyup #badkey #nosep #late
 """
 import argparse
 import io
@@ -34,6 +34,7 @@ CUSTOM_ONLY = {"title", "vocal_gender", "style_weight", "weirdness_constraint", 
 V6_FAMILY = {"V6", "V6_MINI", "V6_WILD"}
 UPLOAD_MODELS = {"V4_5PLUS", "V5", "V5_5", "V6", "V6_MINI", "V6_WILD"}
 STEMS_2 = ["Vocals", "Instrumental"]
+UPLOAD_TASK_MODELS = {"ai-music-api/add-vocals", "ai-music-api/upload-and-cover-audio", "ai-music-api/upload-and-extend-audio"}
 STEMS_12 = ["Vocals", "Backing Vocals", "Drums", "Bass", "Guitar", "Keyboard", "Strings", "Brass",
             "Woodwinds", "Percussion", "Synth", "FX"]
 
@@ -147,8 +148,14 @@ def validate(model, inp, base=""):
     if model == "ai-music-api/separate-vocals":
         if set(inp) - {"task_id", "audio_id", "audio_url", "type", "stem_name"}:
             return "unknown fields"
-        if not inp.get("task_id") or not inp.get("audio_id") or "audio_url" in inp:
-            return "task_id + audio_id required (and no audio_url)"
+        # docs.kie.ai/suno-api/separate-vocals: task_id + audio_id, or audio_url (never both ids and a url).
+        if "audio_url" in inp:
+            if "audio_id" in inp:
+                return "audio_url cannot be used together with audio_id"
+            if not str(inp["audio_url"]).startswith(("https://", "http://")):
+                return "audio_url must be a URL"
+        elif not inp.get("task_id") or not inp.get("audio_id"):
+            return "task_id + audio_id (or audio_url) required"
         if inp.get("type", "separate_vocal") not in ("separate_vocal", "split_stem", "split_stem_advanced"):
             return "type invalid"
         return None
@@ -237,7 +244,19 @@ class H(BaseHTTPRequestHandler):
             return
         if u.path.startswith("/cdn/"):
             name = u.path[5:]
-            if name.endswith(".mp3"):
+            stem_of = None
+            if "_" in name and name.endswith(".mp3"):
+                clip = name.split("_", 1)[0]
+                with LOCK:
+                    stem_of = next((t for t in TASKS.values() if clip in t["clip_ids"]), None)
+            if stem_of is not None and "#late" in stem_of["prompt"] and "_Vocals" in name:
+                # Like the real thing: a long song whose vocal only starts after 20 s of intro
+                # (served as WAV bytes; the bridge goes by the file's content, not its name).
+                body, ctype = concat_wav(wav_bytes(20.0, freq=0), wav_bytes(8.0, freq=440)), "audio/wav"
+                body = concat_wav(body, wav_bytes(12.0, freq=0))
+            elif stem_of is not None and stem_of["model"] == "ai-music-api/upload-and-cover-audio" and "_Vocals" in name:
+                body, ctype = wav_bytes(30.0, freq=0), "audio/wav"     # an instrumental cover has no vocal
+            elif name.endswith(".mp3"):
                 body, ctype = self.server.mp3, "audio/mpeg"
             elif name.endswith(".wav"):
                 body, ctype = wav_bytes(), "audio/wav"
@@ -359,11 +378,25 @@ class H(BaseHTTPRequestHandler):
             return self.js({"code": 422, "msg": err})
         prompt = str(inp.get("prompt", "") or inp.get("style", ""))
         parent = None
-        if model == "ai-music-api/separate-vocals":
+        linked_clip = None
+        if model == "ai-music-api/separate-vocals" and "audio_url" in inp:
+            # Separation of a link: the stems are named after the linked clip.
+            clip = urlsplit(inp["audio_url"]).path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            with LOCK:
+                parent = next((t for t in TASKS.values() if clip in t["clip_ids"]), None)
+            if not parent or "#nosep" in parent["prompt"]:
+                return self.js({"code": 422, "msg": "audio_url could not be fetched"})
+            linked_clip = clip
+            prompt = parent["prompt"]
+        elif model == "ai-music-api/separate-vocals":
             with LOCK:
                 parent = TASKS.get(inp["task_id"])
             if not parent or inp["audio_id"] not in parent["clip_ids"]:
                 return self.js({"code": 422, "msg": "task_id/audio_id not found"})
+            # What the real Kie.ai answered for a result made from uploaded audio (reported by a user,
+            # October 2026): the task id doesn't name a music record it can separate.
+            if parent["model"] in UPLOAD_TASK_MODELS:
+                return self.js({"code": 400, "msg": "Record does not exist"})
             prompt = parent["prompt"]
         if model == "ai-music-api/convert-to-wav-format":
             with LOCK:
@@ -382,7 +415,7 @@ class H(BaseHTTPRequestHandler):
         clip_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
         with LOCK:
             TASKS[tid] = {"model": model, "prompt": prompt, "polls": 0, "clip_ids": clip_ids,
-                          "audio_id": inp.get("audio_id"), "parent": parent, "sep_type": inp.get("type", "separate_vocal"),
+                          "audio_id": inp.get("audio_id") or linked_clip, "parent": parent, "sep_type": inp.get("type", "separate_vocal"),
                           "upload": (inp.get("upload_url") or "")[len(self.base()) + 7:] or None,
                           "ext_clip": clip_ids[0] if model == "ai-music-api/upload-and-extend-audio" else None}
             LOG.append({"model": model, "input": inp})

@@ -283,6 +283,26 @@ Edit stretchClip (const Edit& e, const juce::String& base, double total, int ind
     return simplify (normalised (clips, total), base, total);
 }
 
+Edit stretchClipStart (const Edit& e, const juce::String& base, double total, int index, double newStart)
+{
+    auto m = materialise (e, base, total);
+    if (! juce::isPositiveAndBelow (index, (int) m.clips.size()))
+        return e;
+    auto c = m.clips[(size_t) index];
+    const double src = c.sourceLength();
+    const double end = c.end();
+    const double newLength = juce::jlimit (src / maxStretch, juce::jmin (src / minStretch, end), end - juce::jmax (0.0, newStart));
+    if (newLength < minClipBeats)
+        return e;
+    c.stretch = src / newLength;
+    c.length = newLength;
+    c.start = end - newLength;
+    m.clips.erase (m.clips.begin() + index);
+    auto clips = carve (m.clips, c.start, c.end());
+    clips.push_back (c);
+    return simplify (normalised (clips, total), base, total);
+}
+
 Edit setClipGain (const Edit& e, const juce::String& base, double total, int index, float gainDb)
 {
     auto m = materialise (e, base, total);

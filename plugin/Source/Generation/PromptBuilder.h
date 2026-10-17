@@ -23,6 +23,9 @@ public:
         std::optional<TrackAnalysis> analysis;    // set only when "Use Track Context" is on
         std::optional<double> hostBpm;            // DAW tempo, used when "Use Track Context" is on
         bool expansionEnabled = true;             // "Context Prompt Expansion"
+        /** Key the user picked (root 0-11, minor). Used even with track context off, and over
+            the detected key; a key typed in the prompt still wins. */
+        std::optional<std::pair<int, bool>> userKey;
     };
 
     struct Output
