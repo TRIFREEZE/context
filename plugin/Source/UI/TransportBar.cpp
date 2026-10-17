@@ -9,18 +9,18 @@ namespace context::ui
 void DragToDawPill::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat().reduced (0.5f);
-    const bool over = isMouseOver();
     const bool enabled = isEnabled();
-    g.setColour (enabled ? (over ? colours::accentDark : colours::accentDark.withAlpha (0.55f)) : colours::raised);
+    const float hv = motion::hoverAmount (*this, enabled && isMouseOver());
+    g.setColour (enabled ? colours::accentDark.withAlpha (0.55f + 0.45f * hv) : colours::raised);
     g.fillRoundedRectangle (r, radius::control);
-    g.setColour (enabled ? colours::accent.withAlpha (over ? 1.0f : 0.7f) : colours::border);
+    g.setColour (enabled ? colours::accent.withAlpha (0.7f + 0.3f * hv) : colours::border);
     g.drawRoundedRectangle (r.reduced (0.5f), radius::control, 1.0f);
     auto content = getLocalBounds().reduced (10, 0);
     IconButton::drawIcon (g, IconButton::Icon::Drag, content.removeFromLeft (12).toFloat().withSizeKeepingCentre (10.0f, 14.0f),
                           enabled ? colours::accent : colours::disabled);
     content.removeFromLeft (8);
     g.setColour (enabled ? colours::text : colours::disabled.brighter (0.2f));
-    g.setFont (font (12.0f, Weight::SemiBold));
+    g.setFont (font (type::body, Weight::SemiBold));
     g.drawText ("Drag to DAW", content, juce::Justification::centredLeft);
 }
 
@@ -55,7 +55,7 @@ TransportBar::TransportBar (ContextAudioProcessor& p) : processor (p)
     for (auto* b : { &rewind, &play, &loop })
         addAndMakeVisible (*b);
 
-    mode.setItems ({ "Both", "Context", "Output" }, { "Hear the track context and the sound together (default)", "Hear only your captured track", "Hear only the generated / imported sound" });
+    mode.setItems ({ "Both", "Track", "Sound" }, { "Hear your track and the sound together (1)", "Hear only your captured track (2)", "Hear only the sound (3)" });
     mode.onChange = [this] (int i)
     {
         const PreviewEngine::Mode m[] = { PreviewEngine::Mode::Both, PreviewEngine::Mode::Context, PreviewEngine::Mode::Output };
@@ -75,7 +75,7 @@ TransportBar::TransportBar (ContextAudioProcessor& p) : processor (p)
         setStyle (*b, ButtonStyle::Ghost);
         addAndMakeVisible (*b);
     }
-    regenerate.setTooltip ("Generate again with the same prompt and context");
+    regenerate.setTooltip ("Generate another take with the same prompt and settings. Earlier takes stay in the Takes list.");
     regenerate.onClick = [this]
     {
         if (auto r = processor.getSelectedResult())
@@ -167,8 +167,9 @@ void TransportBar::refresh()
     favorite.setToggleState (result && result->favorite, juce::dontSendNotification);
     regenerate.setEnabled (result.has_value() && processor.isLicensed() && ! busy);
     const bool canVar = processor.canVariation();
+    variation.setVisible (canVar);   // only bridges that support it
     variation.setEnabled (result.has_value() && processor.isLicensed() && ! busy && canVar);
-    variation.setTooltip (canVar ? "Create a variation of this sound" : "The current provider doesn't support variations");
+    variation.setTooltip ("Ask the generator for a variation of this sound");
     const bool hasOutput = s.outputLane().hasAudio;
     for (juce::Component* c : { (juce::Component*) &saveButton, (juce::Component*) &revealButton, (juce::Component*) &copyButton, (juce::Component*) &drag })
         c->setEnabled (hasOutput);
@@ -212,7 +213,7 @@ void TransportBar::paint (juce::Graphics& g)
     g.fillRect (getLocalBounds());
     paintSeparator (g, 0, 0, getWidth());
     g.setColour (colours::dim);
-    g.setFont (numberFont (12.0f));
+    g.setFont (numberFont (type::body));
     g.drawText (positionText, positionArea, juce::Justification::centredLeft);
 }
 
@@ -237,7 +238,8 @@ void TransportBar::resized()
         r.removeFromRight (2);
     }
     r.removeFromRight (space::m);
-    variation.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, height::control));
+    if (variation.isVisible())
+        variation.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, height::control));
     regenerate.setBounds (r.removeFromRight (88).withSizeKeepingCentre (88, height::control));
     favorite.setBounds (r.removeFromRight (28));
 }
@@ -250,14 +252,33 @@ Toast::Toast()
     setStyle (detailsButton, ButtonStyle::Ghost);
     detailsButton.onClick = [this] { if (onDetails) onDetails(); };
     addChildComponent (detailsButton);
-    close.onClick = [this] { setVisible (false); stopTimer(); };
+    close.onClick = [this] { dismiss(); };
     addAndMakeVisible (close);
     setVisible (false);
+    shown.onChange = [this]
+    {
+        const float s = shown.get();
+        setAlpha (juce::jlimit (0.0f, 1.0f, s));
+        setTransform (juce::AffineTransform::translation (0.0f, (1.0f - s) * 10.0f));
+        if (s <= 0.001f && shown.target() <= 0.0f)
+            setVisible (false);
+    };
+}
+
+void Toast::dismiss()
+{
+    stopTimer();
+    if (! motion::enabled())
+    {
+        setVisible (false);
+        return;
+    }
+    shown.set (0.0f, motion::duration::fade, motion::Ease::OutCubic);
 }
 
 int Toast::preferredWidth() const
 {
-    return juce::jlimit (240, 640, juce::GlyphArrangement::getStringWidthInt (font (12.5f, Weight::Medium), message) + 32 + 24 + (onDetails ? 70 : 0));
+    return juce::jlimit (240, 680, juce::GlyphArrangement::getStringWidthInt (font (type::body, Weight::Medium), message) + 32 + 24 + (onDetails ? 92 : 0));
 }
 
 void Toast::show (const juce::String& text, bool error, std::function<void()> details)
@@ -266,7 +287,17 @@ void Toast::show (const juce::String& text, bool error, std::function<void()> de
     isError = error;
     onDetails = std::move (details);
     detailsButton.setVisible (onDetails != nullptr);
-    setVisible (true);
+    if (! isVisible() || shown.target() <= 0.0f)
+    {
+        setVisible (true);
+        shown.snap (0.0f);
+        shown.set (1.0f, motion::duration::panel, motion::Ease::OutQuint);
+        if (! motion::enabled())
+        {
+            setAlpha (1.0f);
+            setTransform ({});
+        }
+    }
     toFront (false);
     if (auto* p = getParentComponent()) p->resized();
     resized();
@@ -276,13 +307,14 @@ void Toast::show (const juce::String& text, bool error, std::function<void()> de
 
 void Toast::timerCallback()
 {
-    stopTimer();
-    setVisible (false);
+    dismiss();
 }
 
 void Toast::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (juce::Colours::black.withAlpha (0.25f));
+    g.fillRoundedRectangle (r.translated (0.0f, 2.0f), radius::panel);
     g.setColour (colours::raised);
     g.fillRoundedRectangle (r, radius::panel);
     g.setColour (isError ? colours::bad.withAlpha (0.7f) : colours::border);
@@ -291,10 +323,10 @@ void Toast::paint (juce::Graphics& g)
     g.setColour (isError ? colours::bad : colours::accent);
     g.fillEllipse ((float) t.getX(), (float) getHeight() * 0.5f - 3.0f, 6.0f, 6.0f);
     t.removeFromLeft (14);
-    t.removeFromRight (24 + (onDetails ? 70 : 0));
+    t.removeFromRight (24 + (onDetails ? 92 : 0));
     g.setColour (colours::text);
-    g.setFont (font (12.5f, Weight::Medium));
-    g.drawText (fitText (message, font (12.5f, Weight::Medium), (float) t.getWidth()), t, juce::Justification::centredLeft, false);
+    g.setFont (font (type::body, Weight::Medium));
+    g.drawText (fitText (message, font (type::body, Weight::Medium), (float) t.getWidth()), t, juce::Justification::centredLeft, false);
 }
 
 void Toast::resized()
@@ -302,11 +334,11 @@ void Toast::resized()
     auto r = getLocalBounds().reduced (6, 0);
     close.setBounds (r.removeFromRight (22).withSizeKeepingCentre (22, 22));
     if (detailsButton.isVisible())
-        detailsButton.setBounds (r.removeFromRight (66).withSizeKeepingCentre (66, 22));
+        detailsButton.setBounds (r.removeFromRight (88).withSizeKeepingCentre (88, 22));
 }
 
 void Toast::mouseUp (const juce::MouseEvent&)
 {
-    setVisible (false);
+    dismiss();
 }
 } // namespace context::ui

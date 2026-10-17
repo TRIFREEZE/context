@@ -21,6 +21,10 @@ public:
     void refresh();
     void tick();
     void focusPrompt() { prompt.focusPrompt(); }
+    /** Workspace keys (transport, capture, editing). True if the key was used. */
+    bool handleShortcut (const juce::KeyPress&);
+    std::function<void()> onShowShortcuts;
+    LanesPanel& getLanes() { return lanes; }
 
     void paint (juce::Graphics&) override;
     void resized() override;

@@ -42,9 +42,21 @@ A working reference implementation with synthetic audio lives in
 {
   "generationTypes": ["one_shot", "loop", "vocal", "instrument", "percussion", "texture", "fx", "melody"],
   "features": ["variation", "cancellation", "audio_conditioning"],
-  "maxDurationSeconds": 30
+  "maxDurationSeconds": 30,
+  "contextModes": ["layer", "cover", "extend"],
+  "maxAudioContextSeconds": 120
 }
 ```
+`contextModes` (optional) says how the bridge can use the track audio:
+
+| Mode | Meaning | Result timing |
+|---|---|---|
+| `layer` | make a part that plays **on top of** the track context (same tempo, key, structure) | sample 0 = bar 1 of the context; Context keeps it exactly in place |
+| `cover` | re-imagine the track context in the prompt's style | free; Context fits it like any other sound |
+| `extend` | generate what comes **after** the track context | sample 0 = the bar after the context; kept in place |
+
+Bridges that list `audio_conditioning` but no `contextModes` are treated as `layer` only
+(plus `cover` / `extend` when the `cover` / `continuation` features are listed).
 Feature ids: `full_song`, `audio_conditioning`, `continuation`, `variation`,
 `cover`, `stem_generation`, `cancellation`. Context disables UI controls for
 anything not listed (e.g. the *Variation* button, *Send Audio Context*).
@@ -68,13 +80,18 @@ Request:
   "variationOf": "<jobId of an earlier generation>",
   "context": { "bpm": 142, "key": "F#", "mode": "minor", "lowEnd": "High", "mids": "Medium",
                "highs": "Low", "stereoWidth": "Wide", "transientDensity": "Moderate", "tonalBalance": "Dark" },
-  "audioContext": { "format": "wav", "encoding": "base64", "data": "<base64 WAV, mono 22.05 kHz, <= 8 s>" }
+  "audioContext": { "format": "wav", "encoding": "base64", "data": "<base64 WAV>", "seconds": 13.714, "bars": 8 },
+  "contextMode": "layer"
 }
 ```
 * `prompt` is what to generate from (context-enhanced unless the user turned enhancement off); `userPrompt` is exactly what they typed.
 * Optional fields are omitted when unknown.
 * `audioContext` is sent **only** if the bridge lists `audio_conditioning` *and* the
-  user enabled "Allow sending audio context" in Settings *and* ticked "Send Audio Context".
+  user allowed it (Settings, or the consent sheet) *and* turned on **Send my track**.
+  It is the captured context (exactly `bars` bars, 44.1 kHz stereo 16-bit, at most 90 s)
+  when one exists, otherwise the last 8 s the plugin heard (mono 22.05 kHz, no `bars`).
+  The WAV is at most 16 MB.
+* `contextMode` is one of the bridge's `contextModes`; only sent together with `audioContext`.
 
 Response (`200` or `202`):
 ```json

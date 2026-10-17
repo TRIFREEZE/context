@@ -56,6 +56,7 @@ juce::var FitSettings::toVar() const
     o->setProperty ("mode", toId (mode));
     o->setProperty ("algorithm", stretch::toId (algorithm));
     o->setProperty ("pitch", pitchSemitones);
+    o->setProperty ("tighten", tighten);
     return juce::var (o);
 }
 
@@ -66,6 +67,7 @@ FitSettings FitSettings::fromVar (const juce::var& v)
     s.algorithm = stretch::algorithmFromId (v.getProperty ("algorithm", {}).toString()).value_or (stretch::Algorithm::Auto);
     const double p = (double) v.getProperty ("pitch", 0.0);
     s.pitchSemitones = std::isfinite (p) ? juce::jlimit (-24.0, 24.0, p) : 0.0;
+    s.tighten = (bool) v.getProperty ("tighten", true);
     return s;
 }
 
@@ -137,6 +139,91 @@ int loopUnitBars (double sourceBars, int targetBars, double tolerance)
     return best;
 }
 
+ContentRange detectContent (const juce::AudioBuffer<float>& b, double rate)
+{
+    const juce::int64 n = b.getNumSamples();
+    ContentRange r { 0, n };
+    if (n == 0 || rate <= 0.0)
+        return r;
+    float peak = 0.0f;
+    for (int ch = 0; ch < b.getNumChannels(); ++ch)
+        peak = juce::jmax (peak, b.getMagnitude (ch, 0, (int) n));
+    if (peak < 1.0e-4f)
+        return r;                                               // silence: nothing to tighten
+    const float headThreshold = juce::jmax (peak * 0.005623f, 1.0e-4f);   // -45 dB re peak
+    const float tailThreshold = juce::jmax (peak * 0.001f, 3.0e-5f);      // -60 dB re peak (keeps tails)
+    auto loud = [&] (juce::int64 i, float t)
+    {
+        for (int ch = 0; ch < b.getNumChannels(); ++ch)
+            if (std::abs (b.getSample (ch, (int) i)) > t)
+                return true;
+        return false;
+    };
+    juce::int64 first = 0;
+    while (first < n && ! loud (first, headThreshold))
+        ++first;
+    juce::int64 last = n - 1;
+    while (last > first && ! loud (last, tailThreshold))
+        --last;
+
+    const auto preRoll = (juce::int64) (0.002 * rate);
+    const auto minHead = (juce::int64) (0.010 * rate);         // don't nibble a few ms off tight files
+    if (first > minHead)
+        r.start = juce::jmax<juce::int64> (0, first - preRoll);
+    // Only real dead air at the end (> 0.5 s) is removed: shorter rests are part of the rhythm.
+    const auto tailPad = (juce::int64) (0.030 * rate);
+    if (n - 1 - last > (juce::int64) (0.5 * rate))
+        r.end = juce::jmin (n, last + 1 + tailPad);
+    if (r.end - r.start < (juce::int64) (0.010 * rate))
+        return { 0, n };
+    return r;
+}
+
+AudioAsset::Ptr tighten (const AudioAsset::Ptr& src, const musical::Tempo& project, double& trimmedStart, double& trimmedEnd)
+{
+    trimmedStart = trimmedEnd = 0.0;
+    // Only generated audio is tightened: a sample the user dropped in is trusted to start where
+    // they want it to (a loop may begin with a rest on beat 1).
+    if (src == nullptr || ! src->isValid() || src->alignedToContext || src->origin != AudioAsset::Origin::Generated)
+        return src;
+    // A designed loop that already lasts a whole number of bars keeps its silences: they are
+    // part of the groove (a rest on beat 1 is not dead space).
+    if (src->designedLoop)
+    {
+        juce::String origin;
+        const auto bpm = inferSourceBpm (*src, project, origin);
+        const musical::Tempo t { bpm.value_or (project.bpm), project.signature };
+        const double bars = musical::barsForSeconds (src->seconds(), t);
+        if (bars >= 0.9 && std::abs (bars - std::round (bars)) <= 0.02 * std::round (bars))
+            return src;
+    }
+    const auto range = detectContent (src->audio, src->sampleRate);
+    if (range.start == 0 && range.end == src->numSamples())
+        return src;
+
+    auto out = std::make_shared<AudioAsset> (*src);
+    const int len = (int) (range.end - range.start);
+    out->audio.setSize (src->numChannels(), len);
+    for (int ch = 0; ch < src->numChannels(); ++ch)
+        out->audio.copyFrom (ch, 0, src->audio, ch, (int) range.start, len);
+    // 1 ms fade-in where we cut into the (quiet) pre-roll, so the cut can never click.
+    if (range.start > 0)
+    {
+        const int fade = juce::jmin (len, (int) (0.001 * src->sampleRate));
+        for (int ch = 0; ch < out->numChannels(); ++ch)
+            out->audio.applyGainRamp (ch, 0, fade, 0.0f, 1.0f);
+    }
+    if (range.end < src->numSamples())
+    {
+        const int fade = juce::jmin (len, (int) (0.010 * src->sampleRate));
+        for (int ch = 0; ch < out->numChannels(); ++ch)
+            out->audio.applyGainRamp (ch, len - fade, fade, 1.0f, 0.0f);
+    }
+    trimmedStart = range.start / src->sampleRate;
+    trimmedEnd = (src->numSamples() - range.end) / src->sampleRate;
+    return out;
+}
+
 FitMode chooseMode (double sourceBars, int targetBars, bool shortSound)
 {
     if (shortSound || sourceBars < 0.75)
@@ -203,8 +290,12 @@ FitResult render (const FitRequest& req, const stretch::TimeStretchEngine::Progr
         return result;
     }
 
-    const auto& src = *req.source;
     auto& rep = result.report;
+    auto working = req.source;
+    if (req.settings.tighten)
+        working = tighten (req.source, req.tempo, rep.trimmedStartSeconds, rep.trimmedEndSeconds);
+    const auto& src = *working;
+    rep.aligned = src.alignedToContext;
     const double rate = req.outputRate;
     rep.targetBars = req.bars;
     rep.targetSamples = musical::samplesForBars (req.bars, req.tempo, rate);
@@ -222,11 +313,17 @@ FitResult render (const FitRequest& req, const stretch::TimeStretchEngine::Progr
     // Short one-shots never get stretched in Auto (a kick stays a kick on bar 1).
     const bool shortSound = rep.sourceSeconds < 0.6 * musical::secondsForBars (1, req.tempo);
     FitMode mode = req.settings.mode == FitMode::Auto ? chooseMode (rep.sourceBars, req.bars, shortSound) : req.settings.mode;
+    if (rep.aligned && req.settings.mode == FitMode::Auto)
+    {
+        // Generated on the context at the context's tempo: keep every sample where it is.
+        const int unit = loopUnitBars (rep.sourceBars, req.bars);
+        mode = (rep.sourceBars + 0.05 < req.bars && unit > 0 && unit < req.bars) ? FitMode::Loop : FitMode::Trim;
+    }
     rep.modeUsed = mode;
 
     auto algo = req.settings.algorithm;
     if (algo == stretch::Algorithm::Auto)
-        algo = (req.material ? *req.material : stretch::analyseMaterial (src.audio, src.sampleRate)).suggested;
+        algo = (req.material && working == req.source ? *req.material : stretch::analyseMaterial (src.audio, src.sampleRate)).suggested;
     if (mode == FitMode::Repitch)
         algo = stretch::Algorithm::Repitch;
     if (algo == stretch::Algorithm::Repitch && mode == FitMode::Stretch)
@@ -272,7 +369,13 @@ FitResult render (const FitRequest& req, const stretch::TimeStretchEngine::Progr
                 // Lock one repeat to exactly `unit` bars first.
                 cellLen = musical::samplesForBars (unit, req.tempo, rate);
                 const double ratio = (double) cellLen / (double) st.getNumSamples();
-                if (std::abs (ratio - 1.0) > 0.0005 || std::abs (pitch) > 1.0e-6)
+                if (rep.aligned)
+                {
+                    // Context-aligned: never stretch, just cut each repeat to exactly `unit` bars.
+                    cell = trimTo (std::abs (pitch) > 1.0e-6 ? runEngine (algo, st, 1.0, pitch, rate, progress) : st, cellLen, rate);
+                    rep.engineUsed = std::abs (pitch) > 1.0e-6;
+                }
+                else if (std::abs (ratio - 1.0) > 0.0005 || std::abs (pitch) > 1.0e-6)
                 {
                     cell = runEngine (algo, st, ratio, pitch, rate, progress);
                     rep.engineUsed = true;

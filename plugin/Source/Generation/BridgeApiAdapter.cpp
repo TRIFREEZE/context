@@ -70,7 +70,14 @@ juce::String BridgeApiAdapter::serializeGenerateRequest (const GenerationRequest
             a->setProperty ("format", "wav");
             a->setProperty ("encoding", "base64");
             a->setProperty ("data", audioContextWav->toBase64Encoding());
+            if (r.audioContext)
+            {
+                if (r.audioContext->seconds > 0.0) a->setProperty ("seconds", std::round (r.audioContext->seconds * 1000.0) / 1000.0);
+                if (r.audioContext->bars > 0)      a->setProperty ("bars", r.audioContext->bars);
+            }
             o->setProperty ("audioContext", juce::var (a));
+            if (r.contextMode.isNotEmpty())
+                o->setProperty ("contextMode", r.contextMode);
         }
     }
     else

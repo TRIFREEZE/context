@@ -53,6 +53,10 @@ public:
     /** Replaces the chain from saved state. Unknown effect types and parameters are
         skipped (reported in the returned warnings); values are clamped. */
     juce::StringArray fromVar (const juce::var&);
+    /** Like fromVar, but when the saved chain has the same effects in the same order (an undo
+        of a knob move or a bypass), only parameters and bypass are set: effect state such as
+        reverb tails survives and nothing is re-created. */
+    void applyState (const juce::var&);
 
     int latencySamples() const;
     double tailSeconds() const;

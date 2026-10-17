@@ -127,7 +127,7 @@ jobs:
           Copy-Item -Recurse -Path "${{ steps.locate.outputs.bundle }}" -Destination "artifact/${{ env.PRODUCT_NAME }}.vst3"
           Copy-Item docs/INSTALL-WINDOWS.txt artifact/INSTALL.txt
           Copy-Item THIRD_PARTY_NOTICES.md artifact/THIRD_PARTY_NOTICES.md
-          Copy-Item plugin/Resources/fonts/Inter-OFL-LICENSE.txt artifact/Inter-OFL-LICENSE.txt
+          Copy-Item plugin/Resources/fonts/Barlow-OFL-LICENSE.txt artifact/Barlow-OFL-LICENSE.txt
           Get-ChildItem -Recurse artifact | ForEach-Object { Write-Host $_.FullName.Replace("$PWD\", "") }
           Compress-Archive -Path "artifact/*" -DestinationPath "${{ env.PRODUCT_NAME }}-Windows-VST3.zip" -Force
 

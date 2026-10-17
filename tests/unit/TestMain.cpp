@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <juce_events/juce_events.h>
 #include "TestSupport.h"
+#include "UI/Motion.h"
 
 /** JUCE's default runner logs through juce::Logger, which on Windows goes to the debugger
     (invisible in CI). This one prints straight to the console so failures show in GitHub logs. */
@@ -26,6 +27,7 @@ int main (int argc, char* argv[])
     juce::ArgumentList args (argc, argv);
 
     context::test::ensureIsolatedAppDataDir();
+    context::ui::motion::setAllowed (false);   // deterministic UI: animations jump to their end
 
     ConsoleTestRunner runner;
     runner.setAssertOnFailure (false);

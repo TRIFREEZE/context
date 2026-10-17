@@ -33,12 +33,15 @@ private:
     juce::TextEditor prompt;
     SegmentedControl typeSelector, lengthSelector;
     juce::TextButton generateButton { "Generate" }, cancelButton { "Cancel" };
-    juce::TextButton useContext { "Analysis" }, sendAudio { "Audio ctx" }, expand { "Enhance" };
+    juce::TextButton useContext { "Analysis" }, sendAudio { "Send my track" }, expand { "Enhance" };
+    SegmentedControl contextMode;          // Layer / Restyle / Continue (when sending the track)
+    juce::StringArray modeIds;
+    void askToAllowAudio();
     juce::String preview, status;
     double progress = -1.0;
     bool busy = false;
     juce::String lastFailedJobShown;
-    juce::Rectangle<int> previewArea, statusArea, progressArea, lengthLabelArea, typeLabelArea;
+    juce::Rectangle<int> previewArea, statusArea, progressArea, lengthLabelArea, typeLabelArea, modeLabelArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PromptPanel)
 };

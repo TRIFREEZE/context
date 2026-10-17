@@ -269,6 +269,35 @@ juce::StringArray EffectChain::fromVar (const juce::var& v)
     return warnings;
 }
 
+void EffectChain::applyState (const juce::var& v)
+{
+    auto* list = v.getProperty ("fx", {}).getArray();
+    bool sameShape = list != nullptr;
+    if (sameShape)
+    {
+        const juce::ScopedLock sl (modelLock);
+        sameShape = list->size() == (int) slots.size();
+        for (int i = 0; sameShape && i < list->size(); ++i)
+            sameShape = (*list)[i].getProperty ("type", {}).toString() == slots[(size_t) i]->fx->typeId()
+                     && (*list)[i].getProperty ("id", {}).toString() == slots[(size_t) i]->instanceId;
+    }
+    if (! sameShape)
+    {
+        fromVar (v);
+        return;
+    }
+    {
+        const juce::ScopedLock sl (modelLock);
+        for (int i = 0; i < list->size(); ++i)
+        {
+            auto& slot = *slots[(size_t) i];
+            slot.fx->setParameterState ((*list)[i].getProperty ("params", {}));
+            slot.bypassed.store ((bool) (*list)[i].getProperty ("bypass", false));
+        }
+    }
+    changed();
+}
+
 int EffectChain::latencySamples() const
 {
     const juce::ScopedLock sl (modelLock);

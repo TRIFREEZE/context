@@ -202,6 +202,39 @@ public:
         expectEquals (*json::getString (body, "userPrompt"), juce::String ("kick"));
         expectEquals (*json::getNumber (body, "bpm"), 140.0);
         expect (! json::getPath (body, "audioContext").isObject());
+        expect (! json::getString (body, "contextMode").has_value(), "no context mode without audio");
+
+        beginTest ("Track context: audio, its length in bars and the context mode are sent");
+        {
+            auto withCtx = req;
+            AudioConditioningPayload p;
+            p.seconds = 16.0;
+            p.bars = 8;
+            withCtx.audioContext = p;
+            withCtx.contextMode = contextmode::layer;
+            juce::MemoryBlock wav ("RIFF....WAVE", 12);
+            const auto cb = json::parseUntrusted (a.serializeGenerateRequest (withCtx, &wav), 1024 * 1024, 16).value;
+            expectEquals (*json::getString (cb, "contextMode"), juce::String ("layer"));
+            expectEquals (*json::getNumber (json::getPath (cb, "audioContext"), "bars"), 8.0);
+            expectEquals (*json::getNumber (json::getPath (cb, "audioContext"), "seconds"), 16.0);
+            expect (json::getString (json::getPath (cb, "audioContext"), "data").has_value());
+
+            const auto rt = GenerationRequest::fromVar (withCtx.toVar());
+            expectEquals (rt.contextMode, juce::String ("layer"), "context mode is kept in history");
+
+            auto caps = Capabilities::fromVar (json::parseUntrusted (
+                R"({"features":["audio_conditioning","cancellation"],"contextModes":["layer","cover","extend","bogus","cover"]})").value,
+                Capabilities::allTypes());
+            expectEquals (caps.usableContextModes().joinIntoString (","), juce::String ("layer,cover,extend"));
+            caps = Capabilities::fromVar (json::parseUntrusted (R"({"features":["audio_conditioning","continuation"]})").value,
+                                          Capabilities::allTypes());
+            expectEquals (caps.usableContextModes().joinIntoString (","), juce::String ("layer,extend"),
+                          "older bridges: modes derived from features");
+            caps = Capabilities::fromVar (json::parseUntrusted (R"({"features":["cancellation"],"contextModes":["layer"]})").value,
+                                          Capabilities::allTypes());
+            expect (caps.usableContextModes().isEmpty(), "no audio_conditioning feature = no context modes");
+            expect (contextmode::isAligned ("layer") && contextmode::isAligned ("extend") && ! contextmode::isAligned ("cover"));
+        }
 
         beginTest ("Field-map request body only contains mapped + static fields");
         BridgeConfiguration fm;

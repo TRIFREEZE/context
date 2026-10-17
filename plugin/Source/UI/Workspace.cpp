@@ -1,4 +1,5 @@
 #include "Workspace.h"
+#include "Sheet.h"
 #include "PluginProcessor.h"
 #include "Utils/Redaction.h"
 
@@ -67,16 +68,41 @@ void Workspace::showDetails (const ProviderError& e)
     detail << "Error code: " << toId (e.code) << "\n";
     if (e.httpStatus != 0)
         detail << "HTTP status: " << e.httpStatus << "\n";
-    detail << "\n" << redaction::redact (e.technicalDetail.isNotEmpty() ? e.technicalDetail : juce::String ("(no further detail)"))
-           << "\n\nUse Settings > Diagnostics > Copy Diagnostic Info to share full details.";
-    juce::AlertWindow::showAsync (juce::MessageBoxOptions()
-                                      .withIconType (juce::MessageBoxIconType::WarningIcon)
-                                      .withTitle ("Technical details")
-                                      .withMessage (detail)
-                                      .withButton ("Copy")
-                                      .withButton ("Close")
-                                      .withAssociatedComponent (this),
-                                  [detail] (int result) { if (result == 1) juce::SystemClipboard::copyTextToClipboard (detail); });
+    detail << "\n" << redaction::redact (e.technicalDetail.isNotEmpty() ? e.technicalDetail : juce::String ("(no further detail)"));
+    auto box = std::make_unique<juce::TextEditor>();
+    box->setMultiLine (true, true);
+    box->setReadOnly (true);
+    box->setScrollbarsShown (true);
+    box->setFont (numberFont (type::label, Weight::Regular));
+    box->setText (detail, false);
+    box->setColour (juce::TextEditor::backgroundColourId, colours::well);
+    Sheet::show (*this, "What went wrong", e.userMessage.isNotEmpty() ? e.userMessage : ProviderError::defaultUserMessage (e.code),
+                 { { "Copy details", ButtonStyle::Secondary, [detail] { juce::SystemClipboard::copyTextToClipboard (detail); } },
+                   { "Close", ButtonStyle::Primary, {} } },
+                 std::move (box), 120);
+}
+
+bool Workspace::handleShortcut (const juce::KeyPress& key)
+{
+    auto& s = processor.session();
+    const auto mods = key.getModifiers();
+    const int code = (int) juce::CharacterFunctions::toUpperCase ((juce::juce_wchar) key.getKeyCode());
+    const bool plain = ! mods.isCommandDown() && ! mods.isAltDown();
+    if (key == juce::KeyPress::spaceKey)                  { s.togglePlay(); refresh(); return true; }
+    if (key == juce::KeyPress::homeKey)                   { s.rewind(); return true; }
+    if (plain && (code == 'L' || code == 'l'))            { s.setLoop (! s.getState().loop); refresh(); return true; }
+    if (plain && code == '1')                             { s.setPlayMode (PreviewEngine::Mode::Both); refresh(); return true; }
+    if (plain && code == '2')                             { s.setPlayMode (PreviewEngine::Mode::Context); refresh(); return true; }
+    if (plain && code == '3')                             { s.setPlayMode (PreviewEngine::Mode::Output); refresh(); return true; }
+    if (plain && (code == 'A' || code == 'a'))            { s.setCompareOriginal (! s.getState().compareOriginal); refresh(); return true; }
+    if (plain && (code == 'R' || code == 'r'))
+    {
+        const auto c = s.captureStatus();
+        if (c.armed() || c.recording()) s.cancelCapture(); else s.startCapture();
+        return true;
+    }
+    if (mods.isCommandDown() && key.getKeyCode() == juce::KeyPress::returnKey) { prompt.startGeneration(); return true; }
+    return lanes.handleKey (key);
 }
 
 void Workspace::paint (juce::Graphics& g)
@@ -90,7 +116,7 @@ void Workspace::paint (juce::Graphics& g)
 void Workspace::resized()
 {
     auto r = getLocalBounds();
-    prompt.setBounds (r.removeFromTop (114));
+    prompt.setBounds (r.removeFromTop (132));
     transport.setBounds (r.removeFromBottom (height::transport));
     // Processing gets a fixed share; the lanes take the rest (they grow with the window).
     const int rackH = juce::jlimit (196, 260, r.getHeight() * 40 / 100);

@@ -124,15 +124,72 @@ public:
     bool hasContext() const;
     void clearContext();
     void retargetContextToHostTempo();
+    /** The captured context for uploading as audio conditioning. Safe from any thread. */
+    struct UploadContext { AudioAsset::Ptr asset; int bars = 0; };
+    UploadContext contextForUpload() const;
 
-    // ---- output source ----
+    // ---- output source / takes ----
+    /** Makes the generation the base take (the whole lane plays it; edits are cleared). */
     void loadGenerated (const GenerationResult&);
+    /** A finished generation: fills the pending selection (requestFill) if there is one,
+        otherwise becomes the new base take. Earlier takes stay available for comping. */
+    void generationArrived (const GenerationResult&);
     void importFile (const juce::File&);
     void clearOutput();
     bool canRestoreGenerated() const;
     void restoreGenerated();
     LaneInfo outputLane() const;
     AudioAsset::Ptr outputSource() const { return source; }
+
+    struct TakeInfo
+    {
+        juce::String id, name;
+        int number = 0;                 // "Take 3"
+        bool isBase = false, loading = false, missing = false, ready = false, used = false;
+        WaveformPeaks::Ptr peaks;       // of the take fitted to the lane
+    };
+    std::vector<TakeInfo> takes() const;
+    void useTakeEverywhere (const juce::String& takeId);
+    void removeTake (const juce::String& takeId);
+
+    // ---- editing (positions in beats = quarter notes; see edit::) ----
+    struct EditView
+    {
+        bool edited = false;
+        std::vector<edit::Clip> clips;  // materialised: what plays, in order
+        juce::String baseTake;
+        double totalBeats = 0.0;
+        double beatsPerBar = 4.0;
+        double gridBeats = 1.0;
+        std::optional<std::pair<double, double>> pendingFill;
+    };
+    EditView editView() const;
+    void setGrid (double beats);
+    void editSplit (double beat);
+    void editDelete (double from, double to);
+    void editFill (double from, double to, const juce::String& takeId);
+    void editMove (int clipIndex, double newStart);
+    void editTrim (int clipIndex, bool startEdge, double newEdge);
+    void editStretch (int clipIndex, double newEnd);
+    void editClipGain (int clipIndex, float gainDb);
+    void editCopy (double from, double to);
+    void editCut (double from, double to);
+    void editPaste (double at);
+    void editDuplicate (double from, double to);
+    bool canPaste() const { return ! clipboard.empty(); }
+    void editReset();
+    /** Remembers [from, to) so the next generation fills it (Fill with a new variation). */
+    void requestFill (double from, double to);
+    void cancelPendingFill();
+
+    // ---- undo / redo (everything that is "the work": fit, edits, takes, context, effects, mix) ----
+    bool canUndo() const;
+    bool canRedo() const;
+    void undo();
+    void redo();
+    /** Knob drags etc.: changes between begin and end become ONE undo step. */
+    void beginGesture();
+    void endGesture();
 
     // ---- fit ----
     void setLengthBars (int bars);
@@ -149,6 +206,7 @@ public:
     void stop();
     void togglePlay();
     void rewind();
+    void seek (juce::int64 timelineSamples);
     bool isPlaying() const;
     void setLoop (bool);
     void setLaneGainDb (int lane, float db);
@@ -175,13 +233,43 @@ public:
     void hostConfigurationChanged();
 
 private:
+    struct TakeRuntime
+    {
+        AudioAsset::Ptr asset;
+        std::optional<stretch::MaterialAnalysis> material;
+        std::shared_ptr<const juce::AudioBuffer<float>> fitted;
+        WaveformPeaks::Ptr peaks;
+        FitReport report;
+        juce::String fitKey;
+        bool loading = false, missing = false;
+        juce::String message;
+        juce::uint64 serial = 0;
+    };
+    struct Snapshot
+    {
+        SessionState state;
+        juce::var chain;
+        juce::String key;
+    };
+
     void timerCallback() override;
     template <typename Fn> void mutate (Fn&& change);
+    juce::String addTake (edit::Take::Kind, const juce::String& ref, const juce::String& name);
+    void setBaseTake (const juce::String& id, bool clearEdits);
+    void ensureTakeLoaded (const edit::Take&);
+    void takeLoaded (const juce::String& id, juce::uint64 serial, AudioAsset::Ptr, std::optional<stretch::MaterialAnalysis>, juce::String error);
+    void syncTakesRuntime();
+    void refreshBaseSource();
+    double totalBeats() const;
+    template <typename Fn> void editWith (Fn&& op);
+    Snapshot currentSnapshot() const;
+    void commitHistory();
+    void applySnapshot (const Snapshot&);
+    void reconcile (const SessionState& before);
     void applyEngineSettings();
     void publishProgram();
     void requestRender();
     void scheduleExport();
-    void setOutputSource (AudioAsset::Ptr, std::optional<stretch::MaterialAnalysis>);
     void loadContextFromCache (const ContextMeta&);
     void applyContext (AudioAsset::Ptr, std::shared_ptr<const juce::AudioBuffer<float>> playback, WaveformPeaks::Ptr,
                        std::optional<TrackAnalysis>, ContextMeta, bool announce);
@@ -197,13 +285,29 @@ private:
     mutable juce::CriticalSection stateLock;
     SessionState state;
 
-    // Context (message thread)
+    // Context (message thread; uploadContext is a lock-protected copy for worker threads)
     AudioAsset::Ptr contextAsset;
+    mutable juce::SpinLock uploadLock;
+    UploadContext uploadContext;
+    void publishUploadContext();
     std::shared_ptr<const juce::AudioBuffer<float>> contextPlayback;   // at renderRate()
     WaveformPeaks::Ptr contextPeaks;
     std::optional<TrackAnalysis> ctxAnalysis;
     bool contextMissing = false, contextProcessing = false;
     juce::String contextMessage;
+
+    // Takes (message thread). `source`/`material` mirror the base take; `fitted` is the
+    // composed output lane (all edits applied), which is what plays and what is exported.
+    std::map<juce::String, TakeRuntime> takeData;
+    std::vector<edit::Clip> clipboard;
+    std::optional<std::pair<double, double>> pendingFill;
+
+    // Undo history (message thread)
+    std::vector<Snapshot> undoStack, redoStack;
+    Snapshot committed;
+    int gestureDepth = 0, quietTicks = 0;
+    juce::String lastSeenKey;
+    bool applyingHistory = false;
 
     // Output (message thread)
     AudioAsset::Ptr source;

@@ -48,6 +48,16 @@ juce::var SessionState::toVar() const
     o->setProperty ("restoreId", restoreGeneratedId);
     if (context)
         o->setProperty ("context", context->toVar());
+    if (! takes.empty())
+    {
+        juce::Array<juce::var> t;
+        for (const auto& x : takes) t.add (x.toVar());
+        o->setProperty ("takes", t);
+        o->setProperty ("baseTake", baseTake);
+    }
+    if (arrangement.isEdited())
+        o->setProperty ("edit", arrangement.toVar());
+    o->setProperty ("grid", gridBeats);
     return juce::var (o);
 }
 
@@ -96,11 +106,72 @@ SessionState SessionState::fromVar (const juce::var& v)
         s.importedPath = {};
     }
     s.context = ContextMeta::fromVar (v.getProperty ("context", {}));
+
+    if (auto* arr = v.getProperty ("takes", {}).getArray())
+        for (const auto& x : *arr)
+            if (auto t = edit::Take::fromVar (x); t && (int) s.takes.size() < maxTakes && s.findTake (t->id) == nullptr)
+                s.takes.push_back (*t);
+    s.baseTake = v.getProperty ("baseTake", {}).toString();
+    s.migrateLegacySource();
+    s.arrangement = edit::Edit::fromVar (v.getProperty ("edit", {}), s.takeIds());
+    s.gridBeats = num ("grid", 1.0, 0.0, 16.0);
     return s;
 }
 
 bool SessionState::operator== (const SessionState& o) const
 {
     return juce::JSON::toString (toVar()) == juce::JSON::toString (o.toVar());
+}
+
+const edit::Take* SessionState::findTake (const juce::String& id) const
+{
+    for (const auto& t : takes)
+        if (t.id == id)
+            return &t;
+    return nullptr;
+}
+
+void SessionState::migrateLegacySource()
+{
+    // Projects from V2.0 (no takes): the single source becomes take 1.
+    if (takes.empty() && sourceKind != SourceKind::None)
+    {
+        edit::Take t;
+        t.id = "t1";
+        t.kind = sourceKind == SourceKind::Imported ? edit::Take::Kind::Imported : edit::Take::Kind::Generated;
+        t.ref = sourceKind == SourceKind::Imported ? importedPath : generatedId;
+        t.name = sourceKind == SourceKind::Imported ? juce::File (importedPath).getFileName() : juce::String();
+        if (t.ref.isNotEmpty())
+        {
+            takes.push_back (t);
+            baseTake = t.id;
+        }
+    }
+    if (findTake (baseTake) == nullptr)
+        baseTake = takes.empty() ? juce::String() : takes.front().id;
+}
+
+juce::StringArray SessionState::takeIds() const
+{
+    juce::StringArray ids;
+    for (const auto& t : takes) ids.add (t.id);
+    return ids;
+}
+
+juce::String SessionState::nextTakeId() const
+{
+    int n = 1;
+    for (const auto& t : takes)
+        n = juce::jmax (n, t.id.substring (1).getIntValue() + 1);
+    return "t" + juce::String (n);
+}
+
+juce::String SessionState::undoKey() const
+{
+    auto copy = *this;
+    copy.playMode = PreviewEngine::Mode::Both;
+    copy.compareOriginal = false;
+    copy.loop = true;
+    return juce::JSON::toString (copy.toVar(), true);
 }
 } // namespace context

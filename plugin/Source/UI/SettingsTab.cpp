@@ -1,5 +1,7 @@
 #include "SettingsTab.h"
 #include "Theme.h"
+#include "Sheet.h"
+#include "Motion.h"
 #include "PluginProcessor.h"
 #include "BuildInfo.h"
 #include "Core/AppPaths.h"
@@ -25,14 +27,14 @@ namespace
 
     void styleEditor (juce::TextEditor& e)
     {
-        e.setFont (ContextLookAndFeel::font (14.0f));
-        e.setIndents (8, 6);
+        e.setFont (ui::font (type::body + 1.0f));
+        e.setIndents (9, 6);
     }
 
     void styleSlider (juce::Slider& s, const juce::String& suffix)
     {
         s.setSliderStyle (juce::Slider::LinearHorizontal);
-        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 80, 22);
+        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 72, 22);
         s.setTextValueSuffix (suffix);
     }
 
@@ -61,11 +63,10 @@ public:
         deactivateButton.onClick = [this]
         {
             juce::Component::SafePointer<Content> safe (this);
-            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
-                                              .withTitle ("Deactivate Context on this computer?")
-                                              .withMessage ("This frees a device slot on your license. Generation stops until you activate again. Audio passthrough is unaffected.")
-                                              .withButton ("Deactivate").withButton ("Cancel").withAssociatedComponent (this),
-                                          [safe] (int r) { if (r == 1 && safe != nullptr) safe->processor.services().license().deactivate(); });
+            Sheet::show (*this, "Deactivate Context on this computer?",
+                         "This frees a device slot on your license. Generation stops until you activate again. Audio passing through the plugin is not affected.",
+                         { { "Cancel", ButtonStyle::Secondary, {} },
+                           { "Deactivate", ButtonStyle::Danger, [safe] { if (safe != nullptr) safe->processor.services().license().deactivate(); } } });
         };
         styleEditor (licenseServer);
         licenseServer.onReturnKey = [this] { commitLicenseServer(); };
@@ -118,6 +119,7 @@ public:
         onCommit (captureSeconds, [this, &settings] { const int v = (int) captureSeconds.getValue(); settings.update ([v] (Settings& s) { s.captureSeconds = v; }); });
         promptExpansion.onClick = [this, &settings] { const bool v = promptExpansion.getToggleState(); settings.update ([v] (Settings& s) { s.promptExpansion = v; }); };
         showEnhanced.onClick = [this, &settings] { const bool v = showEnhanced.getToggleState(); settings.update ([v] (Settings& s) { s.showEnhancedPrompt = v; }); };
+        reduceMotion.onClick = [this, &settings] { const bool v = reduceMotion.getToggleState(); settings.update ([v] (Settings& s) { s.reduceMotion = v; }); };
         allowAudioContext.onClick = [this] { toggleAudioContext(); };
 
         // ---------------- Storage ----------------
@@ -256,21 +258,20 @@ public:
         juce::Component::SafePointer<Content> safe (this);
         const auto host = parsed.host;
         const bool insecure = parsed.scheme == "http";
-        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
-                                          .withTitle ("Use a bridge that is not on this computer?")
-                                          .withMessage ("The bridge at " + host + " is on " + urls::describe (parsed.kind) + ".\n\n"
-                                                        + "Your prompts" + juce::String (insecure ? " will travel unencrypted (http) over the network" : " will be sent over the network")
-                                                        + ", and so will audio context if you enable it. Only continue if you run and trust that bridge.")
-                                          .withButton ("I understand, allow it").withButton ("Cancel").withAssociatedComponent (this),
-                                      [safe, host] (int r)
-        {
-            if (r != 1 || safe == nullptr)
-                return;
-            safe->processor.services().settings().update ([host] (Settings& s) { s.allowNonLocalBridge = true; s.acknowledgedNonLocalHost = host; });
-            safe->processor.rebuildProvider();
-            safe->processor.generation().testConnection();
-            safe->refresh();
-        });
+        allowNonLocal.setToggleState (false, juce::dontSendNotification);
+        Sheet::show (*this, "Use a bridge that is not on this computer?",
+                     "The bridge at " + host + " is on " + urls::describe (parsed.kind) + ". Your prompts"
+                         + juce::String (insecure ? " will travel unencrypted (http) over the network" : " will be sent over the network")
+                         + ", and so will your track if you send it. Only continue if you run and trust that bridge.",
+                     { { "Cancel", ButtonStyle::Secondary, {} },
+                       { "Allow this bridge", ButtonStyle::Danger, [safe, host]
+                         {
+                             if (safe == nullptr) return;
+                             safe->processor.services().settings().update ([host] (Settings& s) { s.allowNonLocalBridge = true; s.acknowledgedNonLocalHost = host; });
+                             safe->processor.rebuildProvider();
+                             safe->processor.generation().testConnection();
+                             safe->refresh();
+                         } } });
     }
 
     void toggleAudioContext()
@@ -283,16 +284,16 @@ public:
         }
         allowAudioContext.setToggleState (false, juce::dontSendNotification);
         juce::Component::SafePointer<Content> safe (this);
-        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
-                                          .withTitle ("Allow sending audio context?")
-                                          .withMessage ("When you also tick \"Send Audio Context\" on the Generate screen, Context sends the last few seconds of your track "
-                                                        "(mono, 22 kHz) to your generation bridge with the request. Track audio is never sent to the Context licensing server.")
-                                          .withButton ("Allow").withButton ("Cancel").withAssociatedComponent (this),
-                                      [safe] (int r)
-        {
-            if (r == 1 && safe != nullptr)
-                safe->processor.services().settings().update ([] (Settings& s) { s.allowSendAudioContext = true; });
-        });
+        Sheet::show (*this, "Allow sending your track?",
+                     "When \"Send my track\" is on, Context sends your captured bars (or the last seconds you played) to your generation "
+                     "bridge with each request, so the result can be made on your track. Your bridge may upload it to its service; the "
+                     "Kie.ai bridge uses Kie.ai's temporary storage, deleted after 24 hours. Track audio never goes to the Context licensing server.",
+                     { { "Cancel", ButtonStyle::Secondary, {} },
+                       { "Allow", ButtonStyle::Primary, [safe]
+                         {
+                             if (safe != nullptr)
+                                 safe->processor.services().settings().update ([] (Settings& s) { s.allowSendAudioContext = true; });
+                         } } });
     }
 
     void chooseFolder()
@@ -313,14 +314,13 @@ public:
     void clearCache()
     {
         juce::Component::SafePointer<Content> safe (this);
-        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
-                                          .withTitle ("Clear the cache?")
-                                          .withMessage ("Deletes generated sounds in Context's cache folder.\n\nKept: favorites, sounds you dragged into a project, "
-                                                        "copied the path of, or opened in Explorer, and every copy you saved elsewhere.")
-                                          .withButton ("Clear Cache").withButton ("Cancel").withAssociatedComponent (this),
-                                      [safe] (int r)
+        Sheet::show (*this, "Clear the cache?",
+                     "Deletes generated sounds in Context's cache folder. Kept: favorites, sounds you dragged into a project, copied the path of "
+                     "or opened in Explorer, and every copy you saved elsewhere.",
+                     { { "Cancel", ButtonStyle::Secondary, {} },
+                       { "Clear cache", ButtonStyle::Danger, [safe]
         {
-            if (r != 1 || safe == nullptr)
+            if (safe == nullptr)
                 return;
             auto& services = safe->processor.services();
             auto* servicesPtr = &services;
@@ -334,7 +334,7 @@ public:
                                                   + juce::String (rep.freedBytes / (1024.0 * 1024.0), 1) + " MB.", juce::dontSendNotification);
                 });
             });
-        });
+        } } });
     }
 
     static juce::String exampleProfiles()
@@ -432,6 +432,7 @@ public:
         captureSeconds.setValue (s.captureSeconds, juce::dontSendNotification);
         promptExpansion.setToggleState (s.promptExpansion, juce::dontSendNotification);
         showEnhanced.setToggleState (s.showEnhancedPrompt, juce::dontSendNotification);
+        reduceMotion.setToggleState (s.reduceMotion, juce::dontSendNotification);
         allowAudioContext.setToggleState (s.allowSendAudioContext, juce::dontSendNotification);
 
         // Storage
@@ -453,9 +454,9 @@ public:
         mockSpeed.setVisible (s.developerMode);
 
         // About
-        aboutLabel.setText (juce::String (build::productName) + "  Version " + build::version + "  " + glyph ("\xc2\xb7") + "  Build " + build::gitCommit
-                            + "  " + glyph ("\xc2\xb7") + "  " + build::buildConfig + "\nJUCE " + juce::SystemStats::getJUCEVersion().fromFirstOccurrenceOf ("v", false, false)
-                            + "  " + glyph ("\xc2\xb7") + "  Data folder: " + AppPaths::root().getFullPathName(), juce::dontSendNotification);
+        aboutLabel.setText (juce::String (build::productName) + " " + build::version + ", build " + build::gitCommit + " (" + build::buildConfig + "), JUCE "
+                            + juce::SystemStats::getJUCEVersion().fromFirstOccurrenceOf ("v", false, false)
+                            + "\nData folder: " + AppPaths::root().getFullPathName(), juce::dontSendNotification);
         const auto u = lic.getUpdateInfo();
         updateLabel.setText (! u.checked ? "Updates are never installed automatically."
                              : u.error.isNotEmpty() ? u.error
@@ -467,65 +468,81 @@ public:
         resized();
     }
 
-    struct Row { juce::String label; std::vector<juce::Component*> comps; int height = 32; std::vector<int> widths; };
+    struct Row { juce::String label; std::vector<juce::Component*> comps; int height = 34; std::vector<int> widths; };
 
     void resized() override
     {
         const auto s = processor.services().settings().get();
         sections.clear();
-        sections.push_back ({ "License", {
-            { "Status", { &licenseStatus }, 32, {} },
-            { "License key", { &licenseKey, &activateButton, &deactivateButton }, 32, { 0, 110, 110 } },
-            { "Licensing server", { &licenseServer }, 32, {} } } });
-        sections.push_back ({ "Generation", {
-            { "Provider", { &provider }, 32, {} },
-            { "Bridge address", { &bridgeUrl, &testButton }, 32, { 0, 150 } },
+        sections.push_back ({ "License", "Your Context license on this computer.", {
+            { "Status", { &licenseStatus }, 30, {} },
+            { "License key", { &licenseKey, &activateButton, &deactivateButton }, 34, { 0, 104, 104 } },
+            { "Licensing server", { &licenseServer }, 34, {} } } });
+        sections.push_back ({ "Generation", "Where sounds come from. Context talks only to the bridge you run.", {
+            { "Provider", { &provider }, 34, {} },
+            { "Bridge address", { &bridgeUrl, &testButton }, 34, { 0, 140 } },
             { "", { &connectionStatus }, 26, {} },
-            { "Bridge profile", { &profile, &editProfilesButton }, 32, { 0, 150 } },
-            { "", { &allowNonLocal }, 28, {} },
+            { "Bridge profile", { &profile, &editProfilesButton }, 34, { 0, 140 } },
+            { "", { &allowNonLocal }, 30, {} },
             { "", { &bridgeHint }, 26, {} },
-            { "Timeout", { &timeout }, 32, {} } } });
-        sections.push_back ({ "Track context", {
-            { "Listen buffer", { &captureSeconds }, 32, {} },
-            { "", { &promptExpansion }, 28, {} },
-            { "", { &showEnhanced }, 28, {} },
-            { "", { &allowAudioContext }, 28, {} } } });
-        sections.push_back ({ "Storage", {
-            { "Generated audio", { &folderLabel, &changeFolderButton, &openFolderButton }, 32, { 0, 100, 100 } },
-            { "Cache limit", { &cacheLimit }, 32, {} },
-            { "", { &cacheUsage, &clearCacheButton }, 32, { 0, 120 } } } });
-        sections.push_back ({ "Preview", { { "Preview volume", { &previewGain }, 32, {} } } });
-        std::vector<Row> diag { { "Log level", { &logLevel }, 32, {} },
-                                { "", { &copyDiagnostics, &openLogs }, 32, { 200, 160 } },
+            { "Give up after", { &timeout }, 34, { 380 } } } });
+        sections.push_back ({ "Your track", "What Context may learn from, and send about, the music in your project.", {
+            { "Listen buffer", { &captureSeconds }, 34, { 380 } },
+            { "", { &promptExpansion }, 30, {} },
+            { "", { &allowAudioContext }, 30, {} } } });
+        sections.push_back ({ "Storage", "Generated sounds live here. Anything you used in a project is never cleaned up.", {
+            { "Generated audio", { &folderLabel, &changeFolderButton, &openFolderButton }, 34, { 0, 96, 80 } },
+            { "Cache limit", { &cacheLimit }, 34, { 380 } },
+            { "", { &cacheUsage, &clearCacheButton }, 34, { 0, 112 } } } });
+        sections.push_back ({ "Interface", "How Context looks and sounds while you work.", {
+            { "Preview volume", { &previewGain }, 34, { 380 } },
+            { "", { &showEnhanced }, 30, {} },
+            { "", { &reduceMotion }, 30, {} } } });
+        std::vector<Row> diag { { "Log level", { &logLevel }, 34, { 200 } },
+                                { "", { &copyDiagnostics, &openLogs }, 34, { 180, 150 } },
                                 { "", { &diagnosticsHint }, 24, {} },
-                                { "", { &developerMode }, 28, {} } };
+                                { "", { &developerMode }, 30, {} } };
         if (s.developerMode)
         {
-            diag.push_back ({ "Mock failures", { &mockFailure }, 32, {} });
-            diag.push_back ({ "Mock speed", { &mockSpeed }, 32, {} });
+            diag.push_back ({ "Mock failures", { &mockFailure }, 34, { 380 } });
+            diag.push_back ({ "Mock speed", { &mockSpeed }, 34, { 380 } });
         }
-        sections.push_back ({ "Diagnostics", diag });
-        sections.push_back ({ "About", {
-            { "", { &aboutLabel }, 40, {} },
-            { "", { &updateLabel, &checkUpdates, &downloadUpdate }, 32, { 0, 150, 130 } },
-            { "", { &setupAgain }, 32, { 170 } } } });
+        sections.push_back ({ "Diagnostics", "For when something goes wrong. Secrets are removed from everything you copy.", diag });
+        sections.push_back ({ "About", "", {
+            { "", { &aboutLabel }, 42, {} },
+            { "", { &updateLabel, &checkUpdates, &downloadUpdate }, 34, { 0, 140, 110 } },
+            { "", { &setupAgain }, 34, { 150 } } } });
 
-        const int labelW = 140, margin = 18;
-        int y = 10;
+        // One readable column, not stretched across wide windows.
+        const int labelW = 150, contentW = juce::jmin (getWidth() - 48, 760);
+        const int x0 = 24;
+        int y = 22;
         headings.clear();
         rowLabels.clear();
-        cards.clear();
-        for (auto& sec : sections)
+        blurbs.clear();
+        rules.clear();
+        sectionTops.clear();
+        for (size_t si = 0; si < sections.size(); ++si)
         {
-            headings.push_back ({ sec.title, juce::Rectangle<int> (margin, y, 300, 20) });
-            y += 26;
-            const int cardTop = y - 4;
+            auto& sec = sections[si];
+            if (si > 0)
+            {
+                rules.push_back (y);
+                y += 22;
+            }
+            sectionTops.push_back ({ sec.title, y - 12 });
+            headings.push_back ({ sec.title, juce::Rectangle<int> (x0, y, contentW, 22) });
+            y += 24;
+            if (sec.blurb.isNotEmpty())
+            {
+                blurbs.push_back ({ sec.blurb, juce::Rectangle<int> (x0, y, contentW, 18) });
+                y += 26;
+            }
             for (auto& row : sec.rows)
             {
-                auto r = juce::Rectangle<int> (margin + 12, y, getWidth() - 2 * margin - 24, row.height - 4);
+                auto r = juce::Rectangle<int> (x0, y, contentW, row.height - 6);
                 rowLabels.push_back ({ row.label, r.withWidth (labelW) });
                 auto content = r.withTrimmedLeft (labelW);
-                // Fixed-width components from the right, flexible (0) component takes the rest.
                 std::vector<int> widths = row.widths;
                 widths.resize (row.comps.size(), 0);
                 int fixed = 0, flexCount = 0;
@@ -534,41 +551,48 @@ public:
                 const int flexW = flexCount > 0 ? juce::jmax (60, (content.getWidth() - fixed - gap * ((int) row.comps.size() - 1)) / flexCount) : 0;
                 for (size_t i = 0; i < row.comps.size(); ++i)
                 {
-                    const int w = widths[i] == 0 ? flexW : widths[i];
+                    const int w = widths[i] == 0 ? flexW : juce::jmin (widths[i], content.getWidth());
                     row.comps[i]->setBounds (content.removeFromLeft (w));
                     content.removeFromLeft (gap);
                 }
                 y += row.height;
             }
-            cards.push_back (juce::Rectangle<int> (margin, cardTop, getWidth() - 2 * margin, y - cardTop + 4));
-            y += 18;
+            y += 8;
         }
-        totalHeight = y;
+        totalHeight = y + 40;
     }
 
     void paint (juce::Graphics& g) override
     {
         g.fillAll (colours::background);
-        for (auto& c : cards)
-            paintCard (g, c.toFloat());
+        for (auto y : rules)
+            paintSeparator (g, y, 24, juce::jmin (getWidth() - 24, 24 + 760));
+        g.setColour (colours::text);
+        g.setFont (ui::font (type::title + 1.0f, Weight::SemiBold));
         for (auto& h : headings)
-            paintHeading (g, h.first, h.second);
-        g.setFont (ContextLookAndFeel::font (13.0f));
+            g.drawText (h.first, h.second, juce::Justification::centredLeft);
+        g.setColour (colours::faint);
+        g.setFont (ui::font (type::label));
+        for (auto& b : blurbs)
+            g.drawText (b.first, b.second, juce::Justification::centredLeft, true);
+        g.setFont (ui::font (type::body));
         g.setColour (colours::dim);
         for (auto& l : rowLabels)
             if (l.first.isNotEmpty())
                 g.drawText (l.first, l.second, juce::Justification::centredLeft);
     }
 
+    std::vector<std::pair<juce::String, int>> sectionTops;
+
     int getTotalHeight() const { return totalHeight; }
 
 private:
-    struct Section { juce::String title; std::vector<Row> rows; };
+    struct Section { juce::String title, blurb; std::vector<Row> rows; };
     SettingsTab& owner;
     ContextAudioProcessor& processor;
     std::vector<Section> sections;
-    std::vector<std::pair<juce::String, juce::Rectangle<int>>> headings, rowLabels;
-    std::vector<juce::Rectangle<int>> cards;
+    std::vector<std::pair<juce::String, juce::Rectangle<int>>> headings, rowLabels, blurbs;
+    std::vector<int> rules;
     int totalHeight = 1200;
     juce::StringArray profileIds;
     std::unique_ptr<juce::FileChooser> chooser;
@@ -584,8 +608,9 @@ public:
     juce::Label connectionStatus, bridgeHint, folderLabel, cacheUsage, updateLabel, aboutLabel, diagnosticsHint;
     juce::ToggleButton allowNonLocal { "Allow non-local generation bridge (another computer / network)" },
                        promptExpansion { "Enhance prompts with track context" },
-                       showEnhanced { "Show the enhanced prompt on the Generate screen" },
-                       allowAudioContext { "Allow sending audio context to the generation bridge (off by default)" },
+                       showEnhanced { "Show the enhanced prompt under the prompt" },
+                       allowAudioContext { "Allow sending my track to the generation bridge (off by default)" },
+                       reduceMotion { "Reduce motion (no interface animations)" },
                        developerMode { "Developer mode (mock provider controls)" };
     juce::Slider timeout, captureSeconds, cacheLimit, previewGain, mockFailure, mockSpeed;
 };
@@ -595,9 +620,44 @@ SettingsTab::SettingsTab (ContextAudioProcessor& p)
     content = std::make_unique<Content> (*this, p);
     viewport.setViewedComponent (content.get(), false);
     viewport.setScrollBarsShown (true, false);
-    viewport.setScrollBarThickness (10);
+    viewport.setScrollBarThickness (8);
     addAndMakeVisible (viewport);
+    scroll.onChange = [this] { viewport.setViewPosition (0, juce::roundToInt (scroll.get())); };
+    viewport.onScroll = [this] { updateIndexHighlight(); };
     refresh();
+}
+
+void SettingsTab::buildIndex()
+{
+    if (index.size() == (int) content->sectionTops.size())
+        return;
+    index.clear();
+    for (size_t i = 0; i < content->sectionTops.size(); ++i)
+    {
+        auto* b = index.add (new juce::TextButton (content->sectionTops[i].first));
+        setStyle (*b, ButtonStyle::Nav);
+        b->setClickingTogglesState (false);
+        b->onClick = [this, i]
+        {
+            if (i >= content->sectionTops.size()) return;
+            const int target = juce::jlimit (0, juce::jmax (0, content->getHeight() - viewport.getHeight()), content->sectionTops[i].second);
+            scroll.snap ((float) viewport.getViewPositionY());
+            scroll.set ((float) target, motion::duration::panel, motion::Ease::OutQuint);
+        };
+        addAndMakeVisible (b);
+    }
+    resized();
+}
+
+void SettingsTab::updateIndexHighlight()
+{
+    const int y = viewport.getViewPositionY() + 40;
+    int current = 0;
+    for (size_t i = 0; i < content->sectionTops.size(); ++i)
+        if (content->sectionTops[i].second <= y)
+            current = (int) i;
+    for (int i = 0; i < index.size(); ++i)
+        index[i]->setToggleState (i == current, juce::dontSendNotification);
 }
 
 SettingsTab::~SettingsTab() = default;
@@ -606,11 +666,20 @@ void SettingsTab::refresh()
 {
     content->refresh();
     content->setSize (viewport.getMaximumVisibleWidth() > 0 ? viewport.getMaximumVisibleWidth() : getWidth(), content->getTotalHeight());
+    buildIndex();
+    updateIndexHighlight();
 }
 
 void SettingsTab::resized()
 {
-    viewport.setBounds (getLocalBounds());
+    // Index of sections on the left (like the lane headers on the Create page), page on the right.
+    auto r = getLocalBounds();
+    auto left = r.removeFromLeft (layout::laneHeader + space::l);
+    left.removeFromTop (18);
+    left.removeFromLeft (space::l - 6);
+    for (auto* b : index)
+        b->setBounds (left.removeFromTop (30).withWidth (layout::laneHeader - space::m).reduced (0, 2));
+    viewport.setBounds (r);
     content->setSize (viewport.getMaximumVisibleWidth(), 100);
     content->resized();
     content->setSize (viewport.getMaximumVisibleWidth(), content->getTotalHeight());
@@ -619,5 +688,7 @@ void SettingsTab::resized()
 void SettingsTab::paint (juce::Graphics& g)
 {
     g.fillAll (colours::background);
+    g.setColour (colours::line);
+    g.fillRect (layout::laneHeader + space::l - 1, 0, 1, getHeight());
 }
 } // namespace context::ui

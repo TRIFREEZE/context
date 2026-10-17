@@ -73,6 +73,7 @@ public:
         GenerationType type = GenerationType::OneShot;
         bool useTrackContext = true;
         bool sendAudioContext = false;
+        juce::String contextMode = "layer";      // how the bridge uses the track context
         juce::String tab = "generate";
         juce::String selectedResultId;
     };
@@ -88,6 +89,9 @@ public:
     GenerationController::EnqueueResult regenerate (const GenerationResult& source);
     GenerationController::EnqueueResult variation (const GenerationResult& source);
     bool canVariation() const;
+    /** Generates a new take in the same style (same prompt, type, tempo, key and context mode)
+        and drops it into [from, to) of the output lane when it arrives. */
+    GenerationController::EnqueueResult fillWithNewTake (double fromBeat, double toBeat);
     void analyzeTrack();
 
     std::optional<GenerationResult> getSelectedResult() const;
@@ -140,6 +144,7 @@ private:
     std::unique_ptr<SerialWorker> previewWorker;      // decodes preview files; joined before members it touches die
     std::unique_ptr<SessionController> sessionController;
     juce::String lastAutoLoadedResult;
+    juce::String pendingFillJob;      // generation that will fill a selection
     void restoreSession (const juce::var& session, const juce::var& chain);
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (ContextAudioProcessor)

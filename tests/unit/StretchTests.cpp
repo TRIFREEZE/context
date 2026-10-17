@@ -314,7 +314,126 @@ public:
 
             const auto s = FitSettings::fromVar (juce::JSON::parse (R"({"mode":"loop","algorithm":"texture","pitch":99})"));
             expect (s.mode == FitMode::Loop && s.algorithm == stretch::Algorithm::Texture && s.pitchSemitones == 24.0);
+            expect (s.tighten, "older projects (no 'tighten') get dead-space removal on");
             expect (FitSettings::fromVar (juce::var ("junk")) == FitSettings{});
+            FitSettings off;
+            off.tighten = false;
+            expect (FitSettings::fromVar (off.toVar()) == off, "tighten round-trips");
+        }
+
+        beginTest ("Dead space: silence before the first sound and after the last is removed; the sound starts on bar 1");
+        {
+            const musical::Tempo t120 { 120.0, {} };
+            const int lead = (int) (0.6 * sr), body = (int) (0.8 * sr), tail = (int) (1.2 * sr);
+            juce::AudioBuffer<float> padded (2, lead + body + tail);
+            padded.clear();
+            auto hit = drums (body, 0.4);
+            for (int ch = 0; ch < 2; ++ch)
+                padded.copyFrom (ch, lead, hit, ch, 0, body);
+            // a whisper of noise floor in the "silence" must not count as sound
+            juce::Random rng (9);
+            for (int i = 0; i < padded.getNumSamples(); ++i)
+                for (int ch = 0; ch < 2; ++ch)
+                    padded.addSample (ch, i, (rng.nextFloat() * 2.0f - 1.0f) * 2.0e-5f);
+
+            const auto range = timefit::detectContent (padded, sr);
+            expect (std::abs (range.start - (lead - (int) (0.002 * sr))) < (int) (0.001 * sr),
+                    "content starts 2 ms before the first hit, got " + juce::String (range.start / sr, 4) + " s");
+            // the last hit decays below -60 dB about 0.17 s after it starts (1.17 s); 30 ms pad
+            expect (range.end > (int) (1.1 * sr) && range.end < lead + body + (int) (0.08 * sr),
+                    "trailing silence removed (end " + juce::String (range.end / sr, 3) + " s)");
+
+            auto generated = std::make_shared<AudioAsset> (*asset (padded));
+            generated->origin = AudioAsset::Origin::Generated;
+            FitRequest req;
+            req.source = generated;
+            req.tempo = t120;
+            req.bars = 2;
+            req.outputRate = sr;
+            auto fit = timefit::render (req);
+            expect (fit.ok());
+            int firstLoud = -1;
+            for (int i = 0; i < fit.audio->getNumSamples() && firstLoud < 0; ++i)
+                if (std::abs (fit.audio->getSample (0, i)) > 0.01f) firstLoud = i;
+            expect (firstLoud >= 0 && firstLoud < (int) (0.004 * sr),
+                    "the first hit lands on bar 1 (" + juce::String (firstLoud / sr * 1000.0, 2) + " ms)");
+            expectWithinAbsoluteError (fit.report.trimmedStartSeconds, 0.598, 0.002, "report says how much was removed");
+            expect (fit.report.trimmedEndSeconds > 1.0);
+            expectEquals ((juce::int64) fit.audio->getNumSamples(), musical::samplesForBars (2, t120, sr), "still exactly N bars");
+            expect (std::abs (fit.audio->getSample (0, 0)) < 1.0e-3f, "no click at the cut");
+
+            req.settings.tighten = false;
+            auto raw = timefit::render (req);
+            int rawFirst = -1;
+            for (int i = 0; i < raw.audio->getNumSamples() && rawFirst < 0; ++i)
+                if (std::abs (raw.audio->getSample (0, i)) > 0.01f) rawFirst = i;
+            expect (rawFirst > (int) (0.55 * sr), "with Tighten off the dead space stays");
+
+            req.settings.tighten = true;
+            req.source = asset (padded);   // imported: the user's own timing is kept
+            auto imported = timefit::render (req);
+            expect (imported.report.trimmedStartSeconds == 0.0, "imported samples are never tightened");
+
+            // Already tight and silent material are left alone.
+            const auto tight = drums ((int) sr, 0.5);
+            expect (timefit::detectContent (tight, sr).start == 0);
+            juce::AudioBuffer<float> silent (2, 4800);
+            silent.clear();
+            const auto sr2 = timefit::detectContent (silent, sr);
+            expect (sr2.start == 0 && sr2.end == 4800);
+        }
+
+        beginTest ("Dead space: designed loops on the grid and context-aligned results are never moved");
+        {
+            const musical::Tempo t120 { 120.0, {} };
+            // A 2-bar loop whose first beat is a rest: the rest is part of the groove.
+            const int loopLen = (int) musical::samplesForBars (2, t120, sr);
+            juce::AudioBuffer<float> groove (2, loopLen);
+            groove.clear();
+            auto hits = drums (loopLen - (int) (0.5 * sr), 0.5);
+            for (int ch = 0; ch < 2; ++ch)
+                groove.copyFrom (ch, (int) (0.5 * sr), hits, ch, 0, hits.getNumSamples());
+            auto loopAsset = std::make_shared<AudioAsset> (*asset (groove));
+            loopAsset->origin = AudioAsset::Origin::Generated;
+            loopAsset->designedLoop = true;
+            loopAsset->bpm = 120.0;
+            double a = 0, b = 0;
+            expect (timefit::tighten (loopAsset, t120, a, b) == loopAsset && a == 0.0, "gridded loop keeps its rest");
+
+            // Generated ON the context: starts with silence because the vocal comes in late.
+            const int ctxLen = (int) (musical::samplesForBars (8, t120, sr) * 1.03);   // a bit long, like real services
+            juce::AudioBuffer<float> vocal (2, ctxLen);
+            vocal.clear();
+            auto phrase = tone (440.0, (int) (2.0 * sr));
+            for (int ch = 0; ch < 2; ++ch)
+                vocal.copyFrom (ch, (int) (3.0 * sr), phrase, ch, 0, phrase.getNumSamples());
+            auto aligned = std::make_shared<AudioAsset> (*asset (vocal));
+            aligned->origin = AudioAsset::Origin::Generated;
+            aligned->alignedToContext = true;
+            aligned->bpm = 120.0;
+            expect (timefit::tighten (aligned, t120, a, b) == aligned, "aligned audio is never trimmed");
+
+            FitRequest req;
+            req.source = aligned;
+            req.tempo = t120;
+            req.bars = 8;
+            req.outputRate = sr;
+            auto fit = timefit::render (req);
+            expect (fit.ok() && fit.report.aligned && ! fit.report.engineUsed && fit.report.modeUsed == FitMode::Trim,
+                    "aligned + Auto = Trim, no stretch");
+            int onset = -1;
+            for (int i = 0; i < fit.audio->getNumSamples() && onset < 0; ++i)
+                if (std::abs (fit.audio->getSample (0, i)) > 0.01f) onset = i;
+            expect (std::abs (onset - (int) (3.0 * sr)) < 48, "the vocal still enters exactly where it did (3.000 s)");
+
+            req.bars = 16;
+            auto doubled = timefit::render (req);
+            expect (doubled.ok() && doubled.report.modeUsed == FitMode::Loop && ! doubled.report.engineUsed,
+                    "16 bars from an 8-bar aligned take: loops it, no stretch");
+            int second = -1;
+            for (int i = (int) musical::samplesForBars (8, t120, sr); i < doubled.audio->getNumSamples() && second < 0; ++i)
+                if (std::abs (doubled.audio->getSample (0, i)) > 0.01f) second = i;
+            expect (std::abs (second - (int) (musical::samplesForBars (8, t120, sr) + 3.0 * sr)) < 48, "second pass enters on bar 9 + 3 s");
         }
     }
 };

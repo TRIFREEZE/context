@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "Audio/Resampler.h"
 #include "PluginEditor.h"
 #include "BuildInfo.h"
 #include "Core/AppPaths.h"
@@ -8,6 +9,31 @@
 
 namespace context
 {
+namespace
+{
+    /** The captured context as a 44.1 kHz stereo 16-bit WAV (what generation services expect). */
+    std::optional<AudioConditioningPayload> writeContextForUpload (const AudioAsset& asset, int bars, const juce::File& file)
+    {
+        constexpr double rate = 44100.0;
+        constexpr double maxSeconds = 90.0;
+        auto stereo = assets::toStereo (asset.audio);
+        if (std::abs (asset.sampleRate - rate) > 0.5)
+            stereo = dsp::resampler::convertRate (stereo, asset.sampleRate, rate);
+        if (stereo.getNumSamples() > (int) (maxSeconds * rate))
+            stereo.setSize (2, (int) (maxSeconds * rate), true, true, true);
+        file.getParentDirectory().createDirectory();
+        juce::String err;
+        if (stereo.getNumSamples() == 0 || ! assets::writeWav (stereo, rate, file, 16, err))
+            return std::nullopt;
+        AudioConditioningPayload p;
+        p.wavFile = file;
+        p.sampleRate = rate;
+        p.seconds = stereo.getNumSamples() / rate;
+        p.bars = bars;
+        return p;
+    }
+}
+
 ContextAudioProcessor::ContextAudioProcessor()
     : juce::AudioProcessor (BusesProperties()
                                 .withInput ("Input", juce::AudioChannelSet::stereo(), true)
@@ -36,7 +62,14 @@ ContextAudioProcessor::ContextAudioProcessor()
         // Double-check consent at the moment of sending (settings may have changed).
         if (! shared->settings().get().allowSendAudioContext)
             return std::nullopt;
-        return analysisController->writeAudioContext (shared->tempFolder().getChildFile (requestId + "-context.wav"), 8.0);
+        const auto file = shared->tempFolder().getChildFile (requestId + "-context.wav");
+        // Prefer the captured context: exactly N bars, full quality, so the bridge can make
+        // something that lines up with it. Fall back to the last seconds of playback.
+        if (sessionController != nullptr)
+            if (auto ctx = sessionController->contextForUpload(); ctx.asset != nullptr)
+                if (auto p = writeContextForUpload (*ctx.asset, ctx.bars, file))
+                    return p;
+        return analysisController->writeAudioContext (file, 8.0);
     };
     generationController = std::make_unique<GenerationController> (deps);
 
@@ -188,6 +221,7 @@ void ContextAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     tree.setProperty ("type", toId (s.type), nullptr);
     tree.setProperty ("useTrackContext", s.useTrackContext, nullptr);
     tree.setProperty ("sendAudioContext", s.sendAudioContext, nullptr);
+    tree.setProperty ("contextMode", s.contextMode, nullptr);
     tree.setProperty ("tab", s.tab, nullptr);
     tree.setProperty ("selectedResultId", s.selectedResultId, nullptr);
     // V2 workspace: settings + references only (captured/generated audio stays in files).
@@ -218,6 +252,10 @@ void ContextAudioProcessor::setStateInformation (const void* data, int sizeInByt
     s.type = generationTypeFromId (tree.getProperty ("type").toString()).value_or (GenerationType::OneShot);
     s.useTrackContext = (bool) tree.getProperty ("useTrackContext", true);
     s.sendAudioContext = (bool) tree.getProperty ("sendAudioContext", false);
+    {
+        const auto cm = tree.getProperty ("contextMode", "layer").toString();
+        s.contextMode = (cm == contextmode::cover || cm == contextmode::extend) ? cm : contextmode::layer;
+    }
     s.tab = tree.getProperty ("tab", "generate").toString().substring (0, 16);
     s.selectedResultId = tree.getProperty ("selectedResultId").toString().substring (0, 64);
     setUiState (s);
@@ -367,7 +405,16 @@ void ContextAudioProcessor::changeListenerCallback (juce::ChangeBroadcaster* sou
                 }
             }
             if (fresh && sessionController != nullptr)
-                sessionController->loadGenerated (*last);
+                sessionController->generationArrived (*last);
+        }
+        // A fill whose generation failed or was cancelled: forget the selection it was for.
+        const auto job = generationController->getCurrentJob();
+        if (pendingFillJob.isNotEmpty() && job.localJobId == pendingFillJob
+            && (job.state == JobState::Failed || job.state == JobState::Cancelled))
+        {
+            pendingFillJob = {};
+            if (sessionController != nullptr)
+                sessionController->cancelPendingFill();
         }
         stateChanged.sendChangeMessage();
     }
@@ -431,8 +478,12 @@ GenerationRequest ContextAudioProcessor::makeRequest (const UiState& s) const
     }
 
     const bool consent = shared->settings().get().allowSendAudioContext;
-    if (s.sendAudioContext && consent && generationController->getCapabilities().has (Feature::AudioConditioning))
+    const auto modes = generationController->getCapabilities().usableContextModes();
+    if (s.sendAudioContext && consent && ! modes.isEmpty())
+    {
         r.audioContext = AudioConditioningPayload{};   // filled on the worker at send time
+        r.contextMode = modes.contains (s.contextMode) ? s.contextMode : modes[0];
+    }
     return r;
 }
 
@@ -446,16 +497,37 @@ GenerationRequest ContextAudioProcessor::requestFromResult (const GenerationResu
     r.key = src.key;
     r.mode = src.mode;
     r.seed = (juce::int64) juce::Random::getSystemRandom().nextInt (0x7fffffff);
+    if (sessionController != nullptr && src.type != GenerationType::OneShot && src.type != GenerationType::FX)
+    {
+        const double seconds = musical::secondsForBars (sessionController->getState().lengthBars, sessionController->sessionTempo());
+        if (seconds > 0.0)
+            r.durationSeconds = juce::jmin (seconds, (double) juce::jmax (1, generationController->getCapabilities().maxDurationSeconds));
+    }
+    // Same style: a result that was generated on the track context is regenerated on it again.
+    const auto mode = src.metadata.getWithDefault ("contextMode", juce::var()).toString();
+    const auto modes = generationController->getCapabilities().usableContextModes();
+    if (mode.isNotEmpty() && modes.contains (mode) && shared->settings().get().allowSendAudioContext)
+    {
+        r.audioContext = AudioConditioningPayload{};
+        r.contextMode = mode;
+    }
     return r;
 }
 
 GenerationController::EnqueueResult ContextAudioProcessor::generate()
 {
+    // A plain Generate replaces the lane, so a pending "fill selection" is dropped.
+    pendingFillJob = {};
+    if (sessionController != nullptr)
+        sessionController->cancelPendingFill();
     return generationController->enqueue (makeRequest (getUiState()));
 }
 
 GenerationController::EnqueueResult ContextAudioProcessor::regenerate (const GenerationResult& source)
 {
+    pendingFillJob = {};
+    if (sessionController != nullptr)
+        sessionController->cancelPendingFill();
     return generationController->enqueue (requestFromResult (source));
 }
 
@@ -479,6 +551,25 @@ GenerationController::EnqueueResult ContextAudioProcessor::variation (const Gene
     if (source.metadata.contains ("seed"))
         req.seed = (juce::int64) source.metadata["seed"] + 1 + juce::Random::getSystemRandom().nextInt (1000);
     return generationController->enqueue (req);
+}
+
+GenerationController::EnqueueResult ContextAudioProcessor::fillWithNewTake (double fromBeat, double toBeat)
+{
+    // Same style as what's on the lane: regenerate the base take's request when it was generated,
+    // otherwise use the prompt as it is now.
+    GenerationRequest req;
+    const auto s = sessionController->getState();
+    if (auto r = s.generatedId.isNotEmpty() ? shared->history().find (s.generatedId) : std::nullopt)
+        req = requestFromResult (*r);
+    else
+        req = makeRequest (getUiState());
+    auto res = generationController->enqueue (req);
+    if (res.ok)
+    {
+        pendingFillJob = res.localJobId;
+        sessionController->requestFill (fromBeat, toBeat);
+    }
+    return res;
 }
 
 void ContextAudioProcessor::analyzeTrack()

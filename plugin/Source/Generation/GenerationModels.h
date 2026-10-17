@@ -25,9 +25,13 @@ struct Capabilities
     std::set<GenerationType> types;          // which generation types the provider accepts
     std::set<Feature> features;
     int maxDurationSeconds = 30;
+    /** How the bridge can use the track context ("layer", "cover", "extend"). Derived from the
+        features when the bridge doesn't list them explicitly. */
+    juce::StringArray contextModes;
 
     bool supports (GenerationType t) const { return types.count (t) > 0; }
     bool has (Feature f) const             { return features.count (f) > 0; }
+    juce::StringArray usableContextModes() const;
 
     static Capabilities allTypes();
     juce::var toVar() const;
@@ -90,7 +94,19 @@ struct AudioConditioningPayload
     juce::File wavFile;          // temporary file in Temp/, deleted after submit
     double seconds = 0.0;
     double sampleRate = 0.0;
+    int bars = 0;                // > 0 when it is the captured context (exact bars)
 };
+
+/** How the generator should use the track context. */
+namespace contextmode
+{
+    inline const juce::String layer  = "layer";    // make a part that plays ON the context (aligned)
+    inline const juce::String cover  = "cover";    // re-imagine the context in the prompt's style
+    inline const juce::String extend = "extend";   // continue after the context (aligned)
+    inline bool isAligned (const juce::String& m) { return m == layer || m == extend; }
+    juce::String label (const juce::String&);
+    juce::String tooltip (const juce::String&);
+}
 
 struct GenerationRequest
 {
@@ -108,6 +124,7 @@ struct GenerationRequest
     juce::String variationOfGenerationId;   // local id of the source result
     juce::String variationOfRemoteId;       // provider job id of the source, if known
     std::optional<AudioConditioningPayload> audioContext;
+    juce::String contextMode;               // contextmode::*, only meaningful with audioContext
     juce::NamedValueSet providerParameters;
     std::optional<TrackAnalysis> contextAnalysis;
 

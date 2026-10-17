@@ -46,6 +46,7 @@ struct Settings
     // UI
     bool firstRunComplete            = false;
     bool showEnhancedPrompt          = true;
+    bool reduceMotion                = false;                    // interface animations off
 
     static Settings defaults();
     juce::var toVar() const;

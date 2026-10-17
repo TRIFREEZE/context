@@ -1,5 +1,6 @@
 #include "WaveformLane.h"
 #include "Controls.h"
+#include "Motion.h"
 
 namespace context::ui
 {
@@ -52,6 +53,12 @@ void TimelineRuler::setPlayhead (juce::int64 samples, bool visible)
     repaint();
 }
 
+void TimelineRuler::mouseDrag (const juce::MouseEvent& e)
+{
+    if (onSeek && view.lengthSamples > 0 && getWidth() > 0)
+        onSeek ((juce::int64) juce::jlimit (0.0, (double) view.lengthSamples - 1.0, (double) e.position.x / getWidth() * (double) view.lengthSamples));
+}
+
 void TimelineRuler::paint (juce::Graphics& g)
 {
     auto area = getLocalBounds().toFloat();
@@ -61,7 +68,7 @@ void TimelineRuler::paint (juce::Graphics& g)
     const int bars = (int) std::ceil (view.bars() - 1.0e-6);
     const double pxPerBar = area.getWidth() * spb / (double) view.lengthSamples;
     const int every = pxPerBar < 22.0 ? 4 : pxPerBar < 36.0 ? 2 : 1;
-    g.setFont (numberFont (10.5f, Weight::Medium));
+    g.setFont (numberFont (type::meta, Weight::Medium));
     for (int b = 0; b < bars; ++b)
     {
         const float x = std::round (view.xForSample (b * spb, area));
@@ -86,7 +93,10 @@ void TimelineRuler::paint (juce::Graphics& g)
 // ===========================================================================
 // Lane
 // ===========================================================================
-WaveformLane::WaveformLane (juce::Colour c, bool acceptsDrops) : colour (c), dropTarget (acceptsDrops) {}
+WaveformLane::WaveformLane (juce::Colour c, bool acceptsDrops) : colour (c), dropTarget (acceptsDrops)
+{
+    swap.onChange = [this] { repaint(); };
+}
 
 bool WaveformLane::looksLikeAudio (const juce::String& path)
 {
@@ -104,6 +114,18 @@ void WaveformLane::setTimeline (const TimelineView& v)
 void WaveformLane::setPeaks (WaveformPeaks::Ptr p, juce::int64 length)
 {
     if (p == peaks && length == laneLength) return;
+    // A new waveform (re-fit, edit, new take) cross-fades over the old one, so the change is visible.
+    if (cacheValid && cache.isValid() && peaks != nullptr && p != nullptr && motion::enabled())
+    {
+        previous = cache;
+        swap.snap (0.0f);
+        swap.set (1.0f, motion::duration::panel, motion::Ease::OutCubic);
+    }
+    else
+    {
+        previous = {};
+        swap.snap (1.0f);
+    }
     peaks = std::move (p);
     laneLength = length;
     invalidate();
@@ -236,7 +258,20 @@ void WaveformLane::paint (juce::Graphics& g)
 
     if (! cacheValid || cache.getWidth() != getWidth() * 2)
         renderCache();
-    g.drawImage (cache, r, juce::RectanglePlacement::stretchToFit);
+    const float s = swap.get();
+    if (previous.isValid() && s < 1.0f && previous.getWidth() == cache.getWidth())
+    {
+        g.setOpacity (1.0f - s);
+        g.drawImage (previous, r, juce::RectanglePlacement::stretchToFit);
+        g.setOpacity (s);
+        g.drawImage (cache, r, juce::RectanglePlacement::stretchToFit);
+        g.setOpacity (1.0f);
+    }
+    else
+    {
+        if (s >= 1.0f) previous = {};
+        g.drawImage (cache, r, juce::RectanglePlacement::stretchToFit);
+    }
 
     const auto area = waveArea();
     const bool empty = peaks == nullptr;
@@ -246,22 +281,23 @@ void WaveformLane::paint (juce::Graphics& g)
         const int lines = b.isNotEmpty() ? 2 : 1;
         auto block = t.withSizeKeepingCentre (t.getWidth(), lines * 18);
         g.setColour (ca);
-        g.setFont (font (12.5f, Weight::Medium));
+        g.setFont (font (type::body + 1.0f, Weight::Medium));
         g.drawText (a, block.removeFromTop (18), juce::Justification::centred, true);
         if (b.isNotEmpty())
         {
             g.setColour (colours::faint);
-            g.setFont (font (11.5f));
+            g.setFont (font (type::body));
             g.drawText (b, block, juce::Justification::centred, true);
         }
     };
 
     if (capturing)
     {
+        // Recording: the amber lamp fills the bars as they are recorded.
         const float x = area.getX() + area.getWidth() * (float) captureProgress;
-        g.setColour (colours::record.withAlpha (0.10f));
+        g.setColour (colours::lamp.withAlpha (0.10f));
         g.fillRect (area.withRight (x));
-        g.setColour (colours::record.withAlpha (0.8f));
+        g.setColour (colours::lamp);
         g.fillRect (x - 1.0f, area.getY(), 2.0f, area.getHeight());
     }
     else if (busy)
@@ -270,8 +306,10 @@ void WaveformLane::paint (juce::Graphics& g)
         g.fillRoundedRectangle (r, radius::control);
         drawProgress (g, juce::Rectangle<float> (area.getCentreX() - 60.0f, area.getCentreY() + 12.0f, 120.0f, 3.0f), busyProgress);
         g.setColour (colours::dim);
-        g.setFont (font (11.5f, Weight::Medium));
+        g.setFont (font (type::body, Weight::Medium));
         g.drawText (busyText, getLocalBounds().withTrimmedBottom (14), juce::Justification::centred, true);
+        if (motion::enabled() && busyProgress < 0.0)
+            motion::Clock::instance().repaintUntil (*this, motion::nowMs() + 100.0);   // indeterminate bar keeps moving
     }
     else if (missingText.isNotEmpty() && empty)
     {
@@ -299,17 +337,8 @@ void WaveformLane::paint (juce::Graphics& g)
         auto pill = getLocalBounds().withSizeKeepingCentre (230, 28).toFloat();
         g.fillRoundedRectangle (pill, radius::control);
         g.setColour (colours::accent);
-        g.setFont (font (12.5f, Weight::SemiBold));
+        g.setFont (font (type::body, Weight::SemiBold));
         g.drawText (empty ? "Drop to load this sample" : "Drop to replace the sound", pill, juce::Justification::centred);
-    }
-    else if (isMouseOver() && onDragOut && ! empty && ! busy)
-    {
-        auto hint = getLocalBounds().removeFromRight (124).removeFromTop (22).reduced (4, 3).toFloat();
-        g.setColour (colours::panel.withAlpha (0.92f));
-        g.fillRoundedRectangle (hint, radius::small);
-        g.setColour (colours::accent);
-        g.setFont (labelFont());
-        g.drawText ("DRAG TO DAW", hint, juce::Justification::centred);
     }
 }
 

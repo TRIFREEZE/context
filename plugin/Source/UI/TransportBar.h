@@ -47,7 +47,7 @@ private:
     IconButton loop { IconButton::Icon::Loop, "Loop" };
     SegmentedControl mode;
     IconButton favorite { IconButton::Icon::Star, "Favorite (keeps it in History and protects it from cleanup)" };
-    juce::TextButton regenerate { "Regenerate" }, variation { "Variation" };
+    juce::TextButton regenerate { "New take" }, variation { "Variation" };
     IconButton saveButton { IconButton::Icon::Save, "Save the processed sound as..." };
     IconButton revealButton { IconButton::Icon::Folder, "Show the processed file in its folder" };
     IconButton copyButton { IconButton::Icon::Copy, "Copy the processed file's path" };
@@ -70,12 +70,15 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
     int preferredWidth() const;
 
+    void dismiss();
+
 private:
     void timerCallback() override;
     juce::String message;
     bool isError = false;
+    motion::Value shown { 0.0f };
     std::function<void()> onDetails;
-    juce::TextButton detailsButton { "Details" };
+    juce::TextButton detailsButton { "What happened" };
     IconButton close { IconButton::Icon::Close, "Dismiss" };
 };
 } // namespace context::ui

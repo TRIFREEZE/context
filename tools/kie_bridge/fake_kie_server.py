@@ -4,8 +4,10 @@ TEST ONLY: a stand-in for api.kie.ai, used by tests/integration/run_kie_bridge_e
 Kie.ai bridge can be tested without a real account, credits or network access.
 
 It implements only the endpoints the bridge uses, with the request rules from
-https://docs.kie.ai (createTask with model + input, jobs/recordInfo, chat/credit), and
-validates the bodies it receives so a mapping mistake in the bridge shows up as a failure.
+https://docs.kie.ai (createTask with model + input, jobs/recordInfo, chat/credit, the File Stream
+Upload API, and the add-vocals / upload-and-cover-audio / upload-and-extend-audio /
+separate-vocals models), and validates the bodies it receives so a mapping mistake in the
+bridge shows up as a failure.
 
     python fake_kie_server.py --port 0 --key test-key --mp3 tests/fixtures/kie_test_tone.mp3
                               [--shape response|resultJson|sunoData]
@@ -29,12 +31,20 @@ KEYS = {"Any", "Cm", "C#m", "Dm", "D#m", "Em", "Fm", "F#m", "Gm", "G#m", "Am", "
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
 CUSTOM_ONLY = {"title", "vocal_gender", "style_weight", "weirdness_constraint", "audio_weight", "variety", "duration"}
 
+V6_FAMILY = {"V6", "V6_MINI", "V6_WILD"}
+UPLOAD_MODELS = {"V4_5PLUS", "V5", "V5_5", "V6", "V6_MINI", "V6_WILD"}
+STEMS_2 = ["Vocals", "Instrumental"]
+STEMS_12 = ["Vocals", "Backing Vocals", "Drums", "Bass", "Guitar", "Keyboard", "Strings", "Brass",
+            "Woodwinds", "Percussion", "Synth", "FX"]
+
 TASKS = {}
+UPLOADS = {}   # file name -> bytes
 LOCK = threading.Lock()
 LOG = []   # (model, input) of every accepted createTask, for the test to inspect
+UPLOADS_SECONDS = {}
 
 
-def wav_bytes(seconds=1.0, rate=44100):
+def wav_bytes(seconds=1.0, rate=44100, freq=330):
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(2)
@@ -42,15 +52,106 @@ def wav_bytes(seconds=1.0, rate=44100):
         w.setframerate(rate)
         frames = bytearray()
         for i in range(int(seconds * rate)):
-            v = int(math.sin(2 * math.pi * 330 * i / rate) * 12000)
+            v = int(math.sin(2 * math.pi * freq * i / rate) * 12000)
             frames += struct.pack("<hh", v, v)
         w.writeframes(bytes(frames))
     return buf.getvalue()
 
 
-def validate(model, inp):
+def concat_wav(a: bytes, b: bytes) -> bytes:
+    """a followed by b (both 16-bit; b is resampled by frame-dropping if the rates differ: test only)."""
+    with wave.open(io.BytesIO(a)) as wa, wave.open(io.BytesIO(b)) as wb:
+        ch, rate = wa.getnchannels(), wa.getframerate()
+        fa = wa.readframes(wa.getnframes())
+        fb = wb.readframes(wb.getnframes())
+        if wb.getnchannels() != ch:                      # stereo tone -> mono
+            fb = b"".join(fb[i:i + 2] for i in range(0, len(fb), 4)) if ch == 1 else fb
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(ch)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(fa + fb)
+    return out.getvalue()
+
+
+def _weights(inp):
+    for f in ("style_weight", "weirdness_constraint", "audio_weight"):
+        if f in inp and (not isinstance(inp[f], (int, float)) or not 0 <= inp[f] <= 1 or round(inp[f], 2) != inp[f]):
+            return f"{f} must be 0-1 with at most 2 decimals"
+    if "variety" in inp and (not isinstance(inp["variety"], int) or not 0 <= inp["variety"] <= 4):
+        return "variety must be an integer 0-4"
+    if "vocal_gender" in inp and inp["vocal_gender"] not in ("m", "f"):
+        return "vocal_gender must be m or f"
+    return None
+
+
+def _uploaded(url, base):
+    return isinstance(url, str) and url.startswith(base + "/files/") and url[len(base) + 7:] in UPLOADS
+
+
+def validate(model, inp, base=""):
     if not isinstance(inp, dict):
         return "input must be an object"
+    if model == "ai-music-api/add-vocals":
+        allowed = {"upload_url", "title", "negative_tags", "style", "prompt", "lyrics", "model", "vocal_gender",
+                   "style_weight", "weirdness_constraint", "audio_weight", "variety"}
+        if set(inp) - allowed:
+            return f"unknown fields {sorted(set(inp) - allowed)}"
+        if not _uploaded(inp.get("upload_url"), base):
+            return "upload_url is not a downloadable file"
+        for f, lim in (("title", 10 ** 6), ("negative_tags", 200), ("style", 1000)):
+            if not isinstance(inp.get(f), str) or not inp[f] or len(inp[f]) > lim:
+                return f"{f} is required (max {lim})"
+        if "model" in inp and inp["model"] not in UPLOAD_MODELS:
+            return "model invalid"
+        return _weights(inp)
+    if model == "ai-music-api/upload-and-cover-audio":
+        allowed = {"upload_url", "instrumental", "model", "lyrics", "prompt", "style", "title", "negative_tags",
+                   "vocal_gender", "style_weight", "weirdness_constraint", "audio_weight", "variety", "persona_id",
+                   "persona_model", "duration"}
+        if set(inp) - allowed:
+            return f"unknown fields {sorted(set(inp) - allowed)}"
+        if not _uploaded(inp.get("upload_url"), base):
+            return "upload_url is not a downloadable file"
+        if not isinstance(inp.get("instrumental"), bool):
+            return "instrumental is required"
+        if inp["instrumental"] and {"lyrics", "prompt", "vocal_gender"} & set(inp):
+            return "lyrics/prompt/vocal_gender not allowed when instrumental"
+        if inp.get("model") not in V6_FAMILY:
+            return "model invalid"
+        if len(str(inp.get("style", ""))) > 1000 or len(str(inp.get("title", ""))) > 80:
+            return "style/title too long"
+        if "duration" in inp and (not isinstance(inp["duration"], int) or not 10 <= inp["duration"] <= 360):
+            return "duration must be an integer 10-360"
+        return _weights(inp)
+    if model == "ai-music-api/upload-and-extend-audio":
+        allowed = {"upload_url", "model", "continue_at", "instrumental", "lyrics", "prompt", "style", "title",
+                   "negative_tags", "vocal_gender", "style_weight", "weirdness_constraint", "audio_weight",
+                   "variety", "persona_id", "persona_model"}
+        if set(inp) - allowed:
+            return f"unknown fields {sorted(set(inp) - allowed)}"
+        if not _uploaded(inp.get("upload_url"), base):
+            return "upload_url is not a downloadable file"
+        if inp.get("model") not in V6_FAMILY:
+            return "model invalid"
+        ca = inp.get("continue_at")
+        seconds = UPLOADS_SECONDS.get(inp["upload_url"][len(base) + 7:], 0)
+        if ca is not None and (not isinstance(ca, (int, float)) or not 0 < ca < seconds):
+            return f"continue_at must be > 0 and < the audio length ({seconds:.2f})"
+        if inp.get("instrumental") and {"lyrics", "prompt", "vocal_gender"} & set(inp):
+            return "lyrics/prompt/vocal_gender not allowed when instrumental"
+        if len(str(inp.get("title", ""))) > 100:
+            return "title too long"
+        return _weights(inp)
+    if model == "ai-music-api/separate-vocals":
+        if set(inp) - {"task_id", "audio_id", "audio_url", "type", "stem_name"}:
+            return "unknown fields"
+        if not inp.get("task_id") or not inp.get("audio_id") or "audio_url" in inp:
+            return "task_id + audio_id required (and no audio_url)"
+        if inp.get("type", "separate_vocal") not in ("separate_vocal", "split_stem", "split_stem_advanced"):
+            return "type invalid"
+        return None
     if model == "ai-music-api/sounds":
         if not isinstance(inp.get("prompt"), str) or not inp["prompt"].strip():
             return "prompt is required"
@@ -109,6 +210,31 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlsplit(self.path)
+        if u.path.startswith("/files/"):
+            with LOCK:
+                body = UPLOADS.get(u.path[7:])
+            if body is None:
+                return self.js({"error": "nf"}, 404)
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if u.path.startswith("/cdn/ext-"):
+            # an "extended" song: the uploaded audio followed by 3 s of new material
+            with LOCK:
+                t = next((t for t in TASKS.values() if t.get("ext_clip") == u.path[9:-4]), None)
+                src = UPLOADS.get(t["upload"]) if t else None
+            if src is None:
+                return self.js({"error": "nf"}, 404)
+            body = concat_wav(src, wav_bytes(3.0, freq=550))
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path.startswith("/cdn/"):
             name = u.path[5:]
             if name.endswith(".mp3"):
@@ -156,7 +282,15 @@ class H(BaseHTTPRequestHandler):
         elif "#sensitive" in p:
             data.update(state="fail", failCode="400", failMsg="SENSITIVE_WORD_ERROR: prompt contains sensitive words")
         elif t["model"] == "ai-music-api/convert-to-wav-format":
-            data["resultJson"] = json.dumps({"resultUrls": [f"{self.base()}/cdn/{t['audio_id']}.wav"]})
+            parent = t.get("parent") or {}
+            if parent.get("model") == "ai-music-api/upload-and-extend-audio":
+                data["resultJson"] = json.dumps({"resultUrls": [f"{self.base()}/cdn/ext-{t['audio_id']}.wav"]})
+            else:
+                data["resultJson"] = json.dumps({"resultUrls": [f"{self.base()}/cdn/{t['audio_id']}.wav"]})
+        elif t["model"] == "ai-music-api/separate-vocals":
+            names = STEMS_12 if t["sep_type"] == "split_stem" else STEMS_2
+            data["resultJson"] = json.dumps({"resultUrls": [f"{self.base()}/cdn/{t['audio_id']}_{n.replace(' ', '%20')}.mp3"
+                                                            for n in names]})
         else:
             clips = [{"id": t["clip_ids"][i], "audio_url": f"{self.base()}/cdn/{t['clip_ids'][i]}.mp3",
                       "stream_audio_url": f"{self.base()}/stream/{t['clip_ids'][i]}", "image_url": "",
@@ -171,9 +305,46 @@ class H(BaseHTTPRequestHandler):
                                                                   "duration": 1.5} for c in clips]}
         return self.js({"code": 200, "msg": "success", "data": data})
 
+    def upload(self):
+        ctype = self.headers.get("Content-Type", "")
+        if not ctype.startswith("multipart/form-data; boundary="):
+            return self.js({"code": 400, "msg": "multipart/form-data required"})
+        boundary = ctype.split("boundary=", 1)[1].encode()
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        fields = {}
+        for part in body.split(b"--" + boundary):
+            if b"\r\n\r\n" not in part:
+                continue
+            head, value = part.split(b"\r\n\r\n", 1)
+            if value.endswith(b"\r\n"):
+                value = value[:-2]
+            name = head.split(b'name="', 1)[1].split(b'"', 1)[0].decode() if b'name="' in head else ""
+            fields[name] = value
+        if not fields.get("uploadPath") or "file" not in fields:
+            return self.js({"code": 400, "msg": "file and uploadPath are required"})
+        up = fields["uploadPath"].decode()
+        if up.startswith("/") or up.endswith("/"):
+            return self.js({"code": 400, "msg": "uploadPath must not start or end with /"})
+        data = fields["file"]
+        if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            return self.js({"code": 400, "msg": "not a wav"})
+        name = fields.get("fileName", b"").decode() or uuid.uuid4().hex + ".wav"
+        key = up + "/" + name
+        with wave.open(io.BytesIO(data)) as w:
+            secs = w.getnframes() / float(w.getframerate())
+        with LOCK:
+            UPLOADS[key] = data
+            UPLOADS_SECONDS[key] = secs
+            LOG.append({"model": "upload", "input": {"uploadPath": up, "fileName": name, "bytes": len(data)}})
+        return self.js({"success": True, "code": 200, "msg": "File uploaded successfully",
+                        "data": {"fileName": name, "filePath": key, "downloadUrl": f"{self.base()}/files/{key}",
+                                 "fileSize": len(data), "mimeType": "audio/wav", "uploadedAt": "2026-10-17T00:00:00Z"}})
+
     def do_POST(self):
         if not self.authed():
             return
+        if urlsplit(self.path).path == "/api/file-stream-upload":
+            return self.upload()
         if urlsplit(self.path).path != "/api/v1/jobs/createTask":
             return self.js({"code": 404, "msg": "not found"})
         try:
@@ -183,10 +354,17 @@ class H(BaseHTTPRequestHandler):
         if set(body) - {"model", "input", "callBackUrl"}:
             return self.js({"code": 422, "msg": "unexpected top-level fields"})
         model, inp = body.get("model"), body.get("input")
-        err = validate(model, inp)
+        err = validate(model, inp, self.base())
         if err:
             return self.js({"code": 422, "msg": err})
-        prompt = str(inp.get("prompt", ""))
+        prompt = str(inp.get("prompt", "") or inp.get("style", ""))
+        parent = None
+        if model == "ai-music-api/separate-vocals":
+            with LOCK:
+                parent = TASKS.get(inp["task_id"])
+            if not parent or inp["audio_id"] not in parent["clip_ids"]:
+                return self.js({"code": 422, "msg": "task_id/audio_id not found"})
+            prompt = parent["prompt"]
         if model == "ai-music-api/convert-to-wav-format":
             with LOCK:
                 parent = TASKS.get(inp["task_id"])
@@ -201,9 +379,12 @@ class H(BaseHTTPRequestHandler):
         if "#credits" in prompt:
             return self.js({"code": 402, "msg": "Insufficient credits"})
         tid = uuid.uuid4().hex
+        clip_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
         with LOCK:
-            TASKS[tid] = {"model": model, "prompt": prompt, "polls": 0,
-                          "clip_ids": [str(uuid.uuid4()), str(uuid.uuid4())], "audio_id": inp.get("audio_id")}
+            TASKS[tid] = {"model": model, "prompt": prompt, "polls": 0, "clip_ids": clip_ids,
+                          "audio_id": inp.get("audio_id"), "parent": parent, "sep_type": inp.get("type", "separate_vocal"),
+                          "upload": (inp.get("upload_url") or "")[len(self.base()) + 7:] or None,
+                          "ext_clip": clip_ids[0] if model == "ai-music-api/upload-and-extend-audio" else None}
             LOG.append({"model": model, "input": inp})
         return self.js({"code": 200, "msg": "success", "data": {"taskId": tid}})
 

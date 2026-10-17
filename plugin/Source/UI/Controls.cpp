@@ -38,6 +38,7 @@ void SegmentedControl::setSelected (int index, juce::NotificationType n)
     if (index == selected)
         return;
     selected = index;
+    movePill (isShowing());
     repaint();
     if (n != juce::dontSendNotification && onChange)
         onChange (index);
@@ -90,6 +91,17 @@ void SegmentedControl::resized()
         cells.add ({ x0, r.getY(), x1 - x0, r.getHeight() });
         x += w;
     }
+    movePill (false);
+}
+
+void SegmentedControl::movePill (bool animate)
+{
+    if (! juce::isPositiveAndBelow (selected, cells.size()))
+        return;
+    pill.onChange ([this] { repaint(); });
+    const auto target = cells[selected].toFloat().reduced (1.0f);
+    if (animate) pill.set (target, motion::duration::slide, motion::Ease::OutQuint);
+    else         pill.snap (target);
 }
 
 void SegmentedControl::paint (juce::Graphics& g)
@@ -101,26 +113,37 @@ void SegmentedControl::paint (juce::Graphics& g)
     g.drawRoundedRectangle (r, radius::control, 1.0f);
     const auto f = font (fontSize, Weight::Medium);
     g.setFont (f);
+    // Hover fades per segment, then the sliding selection pill on top of the fills.
+    for (int i = 0; i < cells.size(); ++i)
+    {
+        const bool en = isEnabled() && enabled[i];
+        const float hv = motion::follow (*this, juce::Identifier ("mSeg" + juce::String (i)), (i == hovered && en && i != selected) ? 1.0f : 0.0f);
+        if (hv > 0.001f)
+        {
+            g.setColour (colours::hover.withAlpha (hv));
+            g.fillRoundedRectangle (cells[i].toFloat().reduced (1.0f), radius::small);
+        }
+    }
+    if (juce::isPositiveAndBelow (selected, cells.size()) && pill.initialised)
+    {
+        g.setColour (isEnabled() ? colours::accentDark : colours::pressed);
+        g.fillRoundedRectangle (pill.get(), radius::small);
+    }
+    const auto p = pill.get();
     for (int i = 0; i < cells.size(); ++i)
     {
         auto c = cells[i];
         const bool sel = i == selected, en = isEnabled() && enabled[i];
-        if (sel)
-        {
-            g.setColour (colours::accentDark);
-            g.fillRoundedRectangle (c.toFloat().reduced (1.0f), radius::small);
-        }
-        else if (i == hovered && en)
-        {
-            g.setColour (colours::hover);
-            g.fillRoundedRectangle (c.toFloat().reduced (1.0f), radius::small);
-        }
-        if (i > 0 && ! sel && i - 1 != selected)
+        // separators fade out where the pill passes
+        if (i > 0 && ! (p.getX() < (float) c.getX() + 2.0f && p.getRight() > (float) c.getX() - 2.0f))
         {
             g.setColour (colours::line);
-            g.fillRect (c.getX(), c.getY() + 5, 1, c.getHeight() - 10);
+            g.fillRect (c.getX(), c.getY() + 6, 1, c.getHeight() - 12);
         }
-        g.setColour (! en ? colours::disabled.brighter (0.15f) : sel ? colours::accent : i == hovered ? colours::text : colours::dim);
+        // text colour follows how much of the pill covers this cell
+        const float cover = juce::jlimit (0.0f, 1.0f, (juce::jmin (p.getRight(), (float) c.getRight()) - juce::jmax (p.getX(), (float) c.getX())) / juce::jmax (1.0f, (float) c.getWidth()));
+        const auto base = (i == hovered && en) ? colours::text : colours::dim;
+        g.setColour (! en ? colours::disabled.brighter (0.15f) : base.interpolatedWith (colours::accent, sel ? juce::jmax (cover, 0.0f) : cover * 0.6f));
         g.drawText (fitText (items[i], f, (float) c.getWidth() - 6.0f), c, juce::Justification::centred, false);
     }
 }
@@ -168,17 +191,17 @@ LaneToggle::LaneToggle (const juce::String& letter, juce::Colour onColour) : juc
 
 void LaneToggle::paintButton (juce::Graphics& g, bool over, bool down)
 {
+    static const juce::Identifier onKey ("mOn");
     auto r = getLocalBounds().toFloat().reduced (0.5f);
-    const bool active = getToggleState();
-    g.setColour (active ? on : down ? colours::pressed : over ? colours::hover : colours::raised);
+    const float act = motion::follow (*this, onKey, getToggleState() ? 1.0f : 0.0f, motion::duration::toggle);
+    const float hv = motion::hoverAmount (*this, over), pr = motion::pressAmount (*this, down);
+    const auto idle = colours::raised.interpolatedWith (colours::hover, hv).interpolatedWith (colours::pressed, pr);
+    g.setColour (idle.interpolatedWith (on, act));
     g.fillRoundedRectangle (r, radius::small);
-    if (! active)
-    {
-        g.setColour (colours::border);
-        g.drawRoundedRectangle (r.reduced (0.5f), radius::small, 1.0f);
-    }
-    g.setColour (active ? colours::accentText : over ? colours::text : colours::dim);
-    g.setFont (font (10.5f, Weight::SemiBold));
+    g.setColour (colours::border.withAlpha (1.0f - act));
+    g.drawRoundedRectangle (r.reduced (0.5f), radius::small, 1.0f);
+    g.setColour (colours::dim.interpolatedWith (colours::text, hv).interpolatedWith (colours::accentText, act));
+    g.setFont (font (type::meta, Weight::SemiBold));
     g.drawText (getButtonText(), getLocalBounds(), juce::Justification::centred);
 }
 
@@ -189,28 +212,37 @@ IconButton::IconButton (Icon i, const juce::String& tip) : juce::Button (tip), i
 
 void IconButton::paintButton (juce::Graphics& g, bool over, bool down)
 {
+    static const juce::Identifier onKey ("mOn");
     auto r = getLocalBounds().toFloat().reduced (0.5f);
-    const bool on = getToggleState();
+    const bool en = isEnabled();
+    const float hv = motion::hoverAmount (*this, en && over), pr = motion::pressAmount (*this, en && down);
+    const float on = motion::follow (*this, onKey, getToggleState() ? 1.0f : 0.0f, motion::duration::toggle);
     const auto style = (ButtonStyle) (int) getProperties().getWithDefault ("ctxStyle", (int) ButtonStyle::Ghost);
     if (style == ButtonStyle::Primary)
     {
-        g.setColour (! isEnabled() ? colours::raised : down ? colours::accent.darker (0.15f) : over ? colours::accentHi : colours::accent);
+        g.setColour (! en ? colours::raised : colours::accent.interpolatedWith (colours::accentHi, hv).interpolatedWith (colours::accent.darker (0.2f), pr));
         g.fillRoundedRectangle (r, radius::control);
     }
-    else if (on || over || down || style == ButtonStyle::Secondary)
+    else
     {
-        g.setColour (on ? colours::accentDark : down ? colours::pressed : over ? colours::hover : colours::raised);
-        g.fillRoundedRectangle (r, radius::control);
-        if (style == ButtonStyle::Secondary && ! on)
+        const auto base = style == ButtonStyle::Secondary ? colours::raised : colours::hover.withAlpha (0.0f);
+        const auto fill = base.interpolatedWith (colours::hover, hv).interpolatedWith (colours::pressed, pr).interpolatedWith (colours::accentDark, on);
+        if (fill.getAlpha() > 0)
         {
-            g.setColour (colours::border);
+            g.setColour (fill);
+            g.fillRoundedRectangle (r, radius::control);
+        }
+        if (style == ButtonStyle::Secondary)
+        {
+            g.setColour (colours::border.withAlpha (1.0f - on));
             g.drawRoundedRectangle (r.reduced (0.5f), radius::control, 1.0f);
         }
     }
-    juce::Colour c = style == ButtonStyle::Primary ? colours::accentText : on ? onColour : over ? colours::text : colours::dim;
-    if (! isEnabled()) c = colours::disabled.brighter (0.2f);
+    juce::Colour c = style == ButtonStyle::Primary ? colours::accentText
+                                                   : colours::dim.interpolatedWith (colours::text, hv).interpolatedWith (onColour, on);
+    if (! en) c = colours::disabled.brighter (0.2f);
     const float s = juce::jmin (r.getWidth(), r.getHeight()) * 0.5f;
-    drawIcon (g, icon, r.withSizeKeepingCentre (s, s), c);
+    drawIcon (g, icon, r.withSizeKeepingCentre (s, s).translated (0.0f, 0.5f * pr), c);
 }
 
 void IconButton::drawIcon (juce::Graphics& g, Icon icon, juce::Rectangle<float> r, juce::Colour c)
@@ -309,6 +341,73 @@ void IconButton::drawIcon (juce::Graphics& g, Icon icon, juce::Rectangle<float> 
                 g.fillPath (a);
             }
             break;
+        case Icon::Undo:
+        case Icon::Redo:
+        {
+            const bool redo = icon == Icon::Redo;
+            auto mx = [&] (float fx) { return redo ? x + w - fx * w : x + fx * w; };
+            p.startNewSubPath (mx (0.12f), y + h * 0.42f);
+            p.lineTo (mx (0.62f), y + h * 0.42f);
+            p.cubicTo (mx (1.0f), y + h * 0.42f, mx (1.0f), y + h * 0.95f, mx (0.62f), y + h * 0.95f);
+            p.lineTo (mx (0.35f), y + h * 0.95f);
+            p.startNewSubPath (mx (0.38f), y + h * 0.14f);
+            p.lineTo (mx (0.1f), y + h * 0.42f);
+            p.lineTo (mx (0.38f), y + h * 0.7f);
+            g.strokePath (p, stroke);
+            break;
+        }
+        case Icon::Split:
+            p.startNewSubPath (r.getCentreX(), y); p.lineTo (r.getCentreX(), y + h);
+            p.startNewSubPath (x, y + h * 0.3f); p.lineTo (x + w * 0.32f, y + h * 0.3f);
+            p.startNewSubPath (x + w * 0.68f, y + h * 0.7f); p.lineTo (x + w, y + h * 0.7f);
+            g.strokePath (p, stroke);
+            break;
+        case Icon::Trash:
+            p.startNewSubPath (x + w * 0.05f, y + h * 0.2f); p.lineTo (x + w * 0.95f, y + h * 0.2f);
+            p.startNewSubPath (x + w * 0.35f, y + h * 0.2f); p.lineTo (x + w * 0.38f, y); p.lineTo (x + w * 0.62f, y); p.lineTo (x + w * 0.65f, y + h * 0.2f);
+            p.startNewSubPath (x + w * 0.16f, y + h * 0.2f); p.lineTo (x + w * 0.24f, y + h); p.lineTo (x + w * 0.76f, y + h); p.lineTo (x + w * 0.84f, y + h * 0.2f);
+            g.strokePath (p, stroke);
+            break;
+        case Icon::Keys:
+            g.drawRoundedRectangle (r.reduced (0.0f, h * 0.15f), 1.5f, stroke.getStrokeThickness());
+            for (int i = 0; i < 3; ++i)
+                g.fillRect (x + w * (0.2f + 0.25f * i), y + h * 0.36f, w * 0.12f, h * 0.1f);
+            g.fillRect (x + w * 0.25f, y + h * 0.58f, w * 0.5f, h * 0.1f);
+            break;
+        case Icon::Sparkle:
+        {
+            auto star = [&] (float cx, float cy, float rr)
+            {
+                juce::Path s4;
+                s4.startNewSubPath (cx, cy - rr);
+                s4.quadraticTo (cx, cy, cx + rr, cy);
+                s4.quadraticTo (cx, cy, cx, cy + rr);
+                s4.quadraticTo (cx, cy, cx - rr, cy);
+                s4.quadraticTo (cx, cy, cx, cy - rr);
+                s4.closeSubPath();
+                g.fillPath (s4);
+            };
+            star (x + w * 0.42f, y + h * 0.55f, w * 0.42f);
+            star (x + w * 0.84f, y + h * 0.16f, w * 0.18f);
+            break;
+        }
+        case Icon::Takes:
+            for (int i = 0; i < 3; ++i)
+                g.fillRoundedRectangle (juce::Rectangle<float> (x + w * 0.08f * (float) (2 - i), y + h * (0.12f + 0.3f * (float) i), w * (0.84f - 0.0f), h * 0.18f), 1.0f);
+            break;
+        case Icon::Magnet:
+            p.startNewSubPath (x + w * 0.15f, y);
+            p.lineTo (x + w * 0.15f, y + h * 0.55f);
+            p.addCentredArc (r.getCentreX(), y + h * 0.55f, w * 0.35f, h * 0.4f, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, false);
+            p.lineTo (x + w * 0.85f, y);
+            g.strokePath (p, stroke);
+            break;
+        case Icon::Help:
+            p.addCentredArc (r.getCentreX(), y + h * 0.32f, w * 0.26f, h * 0.24f, 0.0f, -juce::MathConstants<float>::halfPi * 1.2f, juce::MathConstants<float>::halfPi * 1.1f, true);
+            p.lineTo (r.getCentreX(), y + h * 0.68f);
+            g.strokePath (p, stroke);
+            g.fillEllipse (r.getCentreX() - w * 0.08f, y + h * 0.84f, w * 0.16f, w * 0.16f);
+            break;
         case Icon::Variation:
             p.startNewSubPath (x, y + h * 0.8f);
             p.cubicTo (x + w * 0.3f, y + h * 0.8f, x + w * 0.4f, y + h * 0.2f, x + w * 0.7f, y + h * 0.2f);
@@ -339,6 +438,8 @@ Knob::Knob (fx::EffectParameter& p) : ParameterControl (p)
     slider.setVelocityModeParameters (0.4, 1, 0.0, true, juce::ModifierKeys::shiftModifier);   // Shift = fine
     slider.setValue (p.get(), juce::dontSendNotification);
     slider.setTooltip (p.spec().tooltip);
+    slider.onDragStart = [this] { if (onGestureStart) onGestureStart(); };
+    slider.onDragEnd = [this] { if (onGestureEnd) onGestureEnd(); };
     slider.textFromValueFunction = [&p] (double v) { return p.toText ((float) v); };
     slider.onValueChange = [this]
     {
@@ -350,7 +451,7 @@ Knob::Knob (fx::EffectParameter& p) : ParameterControl (p)
     addAndMakeVisible (slider);
 
     value.setJustificationType (juce::Justification::centred);
-    value.setFont (numberFont (11.0f));
+    value.setFont (numberFont (type::meta));
     value.setColour (juce::Label::textColourId, colours::dim);
     value.setEditable (false, true, false);
     value.setTooltip ("Double-click to type a value");
@@ -390,9 +491,9 @@ void Knob::resized()
 
 void Knob::paint (juce::Graphics& g)
 {
-    g.setColour (isEnabled() ? colours::faint : colours::disabled);
-    g.setFont (font (10.5f, Weight::Medium));
-    g.drawText (fitText (param.spec().name, font (10.5f, Weight::Medium), (float) getWidth()), getLocalBounds().removeFromTop (14), juce::Justification::centred, false);
+    g.setColour (isEnabled() ? colours::dim : colours::disabled);
+    g.setFont (font (type::label, Weight::Medium));
+    g.drawText (fitText (param.spec().name, font (type::label, Weight::Medium), (float) getWidth()), getLocalBounds().removeFromTop (14), juce::Justification::centred, false);
 }
 
 ChoiceControl::ChoiceControl (fx::EffectParameter& p) : ParameterControl (p)
@@ -405,7 +506,7 @@ ChoiceControl::ChoiceControl (fx::EffectParameter& p) : ParameterControl (p)
     {
         segments.setItems (choices);
         segments.setProportional (true);
-        segments.setFontSize (11.0f);
+        segments.setFontSize (type::label);
         segments.setSelected (p.getIndex());
         segments.onChange = [this] (int i) { param.set ((float) i); if (onEdit) onEdit(); };
         addAndMakeVisible (segments);
@@ -447,8 +548,8 @@ void ChoiceControl::resized()
 
 void ChoiceControl::paint (juce::Graphics& g)
 {
-    g.setColour (isEnabled() ? colours::faint : colours::disabled);
-    g.setFont (font (10.5f, Weight::Medium));
+    g.setColour (isEnabled() ? colours::dim : colours::disabled);
+    g.setFont (font (type::label, Weight::Medium));
     g.drawText (param.spec().name, getLocalBounds().removeFromTop (14), juce::Justification::centred, true);
 }
 

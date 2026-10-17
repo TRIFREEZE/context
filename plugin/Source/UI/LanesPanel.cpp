@@ -24,11 +24,50 @@ namespace
     }
 }
 
-LanesPanel::LanesPanel (ContextAudioProcessor& p) : processor (p)
+namespace
+{
+    struct GridChoice { const char* label; double beats; };   // beats < 0 = one bar
+    const GridChoice gridChoices[] = { { "Bar", -1.0 }, { "1/2", 2.0 }, { "Beat", 1.0 }, { "1/8", 0.5 }, { "1/16", 0.25 }, { "Off", 0.0 } };
+}
+
+LanesPanel::LanesPanel (ContextAudioProcessor& p) : processor (p), overlay (p.session())
 {
     addAndMakeVisible (ruler);
     addAndMakeVisible (contextLane);
     addAndMakeVisible (outputLane);
+    outputLane.addAndMakeVisible (overlay);
+    addChildComponent (selectionBar);
+    ruler.onSeek = [this] (juce::int64 s) { processor.session().seek (s); };
+
+    overlay.onSeek = [this] (double beat)
+    {
+        const auto t = processor.session().sessionTempo();
+        processor.session().seek (edit::samplesForBeats (beat, t, processor.session().renderRate()));
+    };
+    overlay.onSelectionChanged = [this] { updateSelectionBar(); };
+    overlay.onContextMenu = [this] (juce::Point<int> pt) { showEditMenu (pt); };
+    selectionBar.onNewTake = [this] { fillWithNewTake(); };
+    selectionBar.onFromTake = [this] { showFillFromMenu (&selectionBar); };
+    selectionBar.onSplit = [this] { splitAtSelectionOrPlayhead(); };
+    selectionBar.onDelete = [this] { deleteSelection(); };
+
+    for (int i = 0; i < (int) std::size (gridChoices); ++i)
+        snap.addItem (juce::String ("Snap: ") + gridChoices[i].label, i + 1);
+    snap.setTooltip ("Grid for selecting, moving and trimming (G turns snapping on and off; hold Alt to drag freely)");
+    snap.onChange = [this]
+    {
+        const int i = snap.getSelectedId() - 1;
+        if (! juce::isPositiveAndBelow (i, (int) std::size (gridChoices)))
+            return;
+        const double bpb = musical::quarterNotesPerBar (processor.session().sessionTempo().signature);
+        processor.session().setGrid (gridChoices[i].beats < 0.0 ? bpb : gridChoices[i].beats);
+    };
+    addAndMakeVisible (snap);
+
+    setStyle (takesButton, ButtonStyle::Ghost);
+    takesButton.setTooltip ("Takes: every version of this sound. Pick which one plays, or comp bars from several.");
+    takesButton.onClick = [this] { showTakesMenu(); };
+    addAndMakeVisible (takesButton);
 
     contextLane.setTooltip ("Your track: the 8 bars captured from the DAW");
     contextLane.onRightClick = [this] (const juce::MouseEvent&) { showContextMenu(); };
@@ -38,10 +77,8 @@ LanesPanel::LanesPanel (ContextAudioProcessor& p) : processor (p)
             processor.session().startCapture();
     };
 
-    outputLane.setTooltip ("Generated or dropped-in sound, fitted to the bar length. Drag it into your DAW.");
-    outputLane.onRightClick = [this] (const juce::MouseEvent&) { showOutputMenu(); };
     outputLane.onFileDropped = [this] (const juce::File& f) { processor.session().importFile (f); };
-    outputLane.onDragOut = [this]() -> juce::File
+    overlay.onDragOut = [this]() -> juce::File
     {
         juce::MouseCursor::showWaitCursor();
         const auto r = processor.session().exportProcessed();
@@ -96,7 +133,7 @@ LanesPanel::LanesPanel (ContextAudioProcessor& p) : processor (p)
     outMenu.onClick = [this] { showOutputMenu(); };
 
     manualTempo.setEditable (true, true, false);
-    manualTempo.setFont (numberFont (15.0f, Weight::SemiBold));
+    manualTempo.setFont (numberFont (type::readout - 2.0f, Weight::SemiBold));
     manualTempo.setColour (juce::Label::textColourId, colours::text);
     manualTempo.setColour (juce::Label::backgroundWhenEditingColourId, colours::well);
     manualTempo.setTooltip ("No tempo from the DAW: click to set the tempo used for bars and fitting");
@@ -177,15 +214,11 @@ juce::String LanesPanel::outputDetail() const
     const auto src = s.outputSource();
     if (src == nullptr)
         return {};
-    juce::String d = src->origin == AudioAsset::Origin::Generated ? "Generated" : "Imported";
-    d << glyph (" \xc2\xb7 ") << juce::String (src->seconds(), src->seconds() < 10.0 ? 2 : 1) << " s";
+    juce::String d = src->origin == AudioAsset::Origin::Generated ? (src->alignedToContext ? "Made on your track, " : "Generated, ") : "Your file, ";
+    d << juce::String (src->seconds(), src->seconds() < 10.0 ? 2 : 1) << " s";
     const auto fit = s.fitStatus();
-    if (fit.hasReport)
-    {
-        d << glyph (" \xc2\xb7 ") << juce::String (fit.report.sourceBars, 2) << " bars";
-        if (fit.report.sourceBpm)
-            d << glyph (" \xe2\x89\x88") << juce::roundToInt (*fit.report.sourceBpm) << " BPM";
-    }
+    if (fit.hasReport && fit.report.sourceBpm)
+        d << " at " << juce::roundToInt (*fit.report.sourceBpm) << " BPM";
     return d;
 }
 
@@ -201,24 +234,27 @@ juce::String LanesPanel::fitSummary() const
         return fit.error;
     if (! fit.hasReport)
         return {};
+    // One plain sentence about what was done to the sound.
     const auto& r = fit.report;
-    const auto arrow = glyph (" \xe2\x86\x92 ");
+    auto pct = [] (double p) { return (p >= 0 ? "+" : "") + juce::String (p, 1) + "%"; };
     juce::String t;
-    t << juce::String (r.sourceBars, 2) << arrow << r.targetBars << " bars";
+    t << juce::String (r.sourceBars, 2) << glyph (" \xe2\x86\x92 ") << r.targetBars << " bars: ";
     switch (r.modeUsed)
     {
-        case FitMode::Stretch: t << glyph (" \xc2\xb7 Fit ") << (r.stretchPercent >= 0 ? "+" : "") << juce::String (r.stretchPercent, 1) << "%"; break;
-        case FitMode::Repitch: t << glyph (" \xc2\xb7 Repitch ") << (r.pitchSemitones >= 0 ? "+" : "") << juce::String (r.pitchSemitones, 1) << " st"; break;
-        case FitMode::Loop:    t << glyph (" \xc2\xb7 Loop x") << r.loopRepeats; if (r.engineUsed) t << " (" << (r.stretchPercent >= 0 ? "+" : "") << juce::String (r.stretchPercent, 1) << "%)"; break;
-        case FitMode::Trim:    t << glyph (" \xc2\xb7 ") << (r.sourceBars < r.targetBars ? "Padded" : "Trimmed"); break;
+        case FitMode::Stretch: t << "stretched " << pct (r.stretchPercent); break;
+        case FitMode::Repitch: t << "repitched " << (r.pitchSemitones >= 0 ? "+" : "") << juce::String (r.pitchSemitones, 1) << " st"; break;
+        case FitMode::Loop:    t << "looped " << r.loopRepeats << glyph ("\xc3\x97"); if (r.engineUsed) t << ", each repeat " << pct (r.stretchPercent); break;
+        case FitMode::Trim:    t << (r.aligned ? "kept in time with your track" : r.sourceBars < r.targetBars ? "padded" : "trimmed"); break;
         case FitMode::Auto:    break;
     }
     if (r.engineUsed && r.modeUsed != FitMode::Repitch)
-        t << glyph (" \xc2\xb7 ") << (s.getState().fit.algorithm == stretch::Algorithm::Auto ? "Auto: " : "") << stretch::toLabel (r.algorithmUsed);
+        t << " with " << stretch::toLabel (r.algorithmUsed);
     if (std::abs (r.pitchSemitones) > 0.05 && r.modeUsed != FitMode::Repitch)
-        t << glyph (" \xc2\xb7 ") << (r.pitchSemitones > 0 ? "+" : "") << juce::String (r.pitchSemitones, 1) << " st";
+        t << ", " << (r.pitchSemitones > 0 ? "+" : "") << juce::String (r.pitchSemitones, 1) << " st";
+    if (r.trimmedStartSeconds + r.trimmedEndSeconds > 0.005)
+        t << ", " << juce::String (r.trimmedStartSeconds + r.trimmedEndSeconds, 2) << " s of silence removed";
     if (s.getState().fit.mode == FitMode::Auto)
-        t << "  (Auto: " << toLabel (r.modeUsed) << ")";
+        t << ". Auto picked " << toLabel (r.modeUsed) << ".";
     return t;
 }
 
@@ -248,6 +284,25 @@ void LanesPanel::refresh()
     outputLane.setPeaks (out.peaks, out.hasAudio ? out.lengthSamples : 0);
     outputLane.setMissing (out.missing ? out.message : juce::String());
     outputLane.setEmptyText ("Drop audio here", "or generate something above");
+    overlay.setTimeline (timeline);
+    overlay.update();
+    {
+        const auto v = s.editView();
+        int choice = (int) std::size (gridChoices) - 1;
+        for (int i = 0; i < (int) std::size (gridChoices); ++i)
+        {
+            const double b = gridChoices[i].beats < 0.0 ? v.beatsPerBar : gridChoices[i].beats;
+            if (std::abs (b - v.gridBeats) < 1.0e-9) { choice = i; break; }
+        }
+        snap.setSelectedId (choice + 1, juce::dontSendNotification);
+        const auto takes = s.takes();
+        int baseNumber = 0;
+        for (const auto& t : takes) if (t.isBase) baseNumber = t.number;
+        takesButton.setVisible (! takes.empty());
+        takesButton.setButtonText (takes.size() > 1 ? "Take " + juce::String (baseNumber) + " of " + juce::String ((int) takes.size())
+                                                    : juce::String ("Take ") + juce::String (baseNumber));
+    }
+    updateSelectionBar();
 
     // Header controls
     const bool capBusy = cap.armed() || cap.recording();
@@ -300,9 +355,12 @@ void LanesPanel::tick()
     auto& s = processor.session();
     const bool playing = s.isPlaying();
     const auto pos = s.playheadSamples();
-    ruler.setPlayhead (pos, playing);
-    contextLane.setPlayhead (pos, playing && contextLane.hasAudio());
-    outputLane.setPlayhead (pos, playing && outputLane.hasAudio());
+    // Shown while playing, and parked where the user clicked while stopped.
+    const bool showHead = playing || pos > 0;
+    ruler.setPlayhead (pos, showHead);
+    contextLane.setPlayhead (pos, showHead && contextLane.hasAudio());
+    outputLane.setPlayhead (pos, showHead && outputLane.hasAudio());
+    overlay.setPlayheadBeat (playheadBeat(), showHead);
 
     const auto cap = s.captureStatus();
     contextLane.setCaptureProgress (cap.progress, cap.recording());
@@ -356,28 +414,279 @@ void LanesPanel::showContextMenu()
     });
 }
 
-void LanesPanel::showOutputMenu()
+void LanesPanel::addOutputItems (juce::PopupMenu& m, int base)
 {
     auto& s = processor.session();
     const auto src = s.outputSource();
-    juce::PopupMenu m;
-    m.addItem (1, "Load sample...");
-    m.addItem (2, "Restore generated version", s.canRestoreGenerated());
-    m.addItem (5, "Reset fit settings");
+    m.addItem (base + 1, "Load sample...");
+    m.addItem (base + 2, "Restore generated version", s.canRestoreGenerated());
+    m.addItem (base + 5, "Reset fit settings");
+    m.addItem (base + 6, "Reset edits", s.getState().arrangement.isEdited());
     m.addSeparator();
-    m.addItem (3, "Show original file", src != nullptr && src->sourceFile.existsAsFile());
-    m.addItem (4, "Clear", src != nullptr || s.outputLane().missing);
+    m.addItem (base + 3, "Show original file", src != nullptr && src->sourceFile.existsAsFile());
+    m.addItem (base + 4, "Clear the lane", src != nullptr || s.outputLane().missing);
+}
+
+void LanesPanel::handleOutputItem (int r)
+{
+    auto& ss = processor.session();
+    const auto src = ss.outputSource();
+    if (r == 1) openSampleChooser();
+    if (r == 2) ss.restoreGenerated();
+    if (r == 3 && src != nullptr) src->sourceFile.revealToUser();
+    if (r == 4) ss.clearOutput();
+    if (r == 5) ss.resetFit();
+    if (r == 6) ss.editReset();
+}
+
+void LanesPanel::showOutputMenu()
+{
+    juce::PopupMenu m;
+    addOutputItems (m, 0);
     juce::Component::SafePointer<LanesPanel> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&outMenu), [safe, src] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&outMenu), [safe] (int r)
+    {
+        if (safe != nullptr && r > 0) safe->handleOutputItem (r);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Editing
+// ---------------------------------------------------------------------------
+
+double LanesPanel::playheadBeat() const
+{
+    auto& s = processor.session();
+    const auto t = s.sessionTempo();
+    const double rate = s.renderRate();
+    const double total = s.editView().totalBeats;
+    double beat = (double) s.playheadSamples() * t.bpm / (60.0 * rate);
+    if (total > 0.0)
+        beat = std::fmod (beat, total);
+    return beat;
+}
+
+juce::String LanesPanel::rangeText (double from, double to) const
+{
+    const auto v = processor.session().editView();
+    auto pos = [&] (double beat)
+    {
+        // bar.beat, 1-based, like the transport
+        const int bar = (int) std::floor (beat / v.beatsPerBar + 1.0e-9);
+        const double inBar = beat - bar * v.beatsPerBar;
+        const double beatNum = inBar + 1.0;
+        return juce::String (bar + 1) + "." + (std::abs (beatNum - std::round (beatNum)) < 1.0e-6 ? juce::String ((int) std::round (beatNum))
+                                                                                                   : juce::String (beatNum, 2));
+    };
+    const double bars = (to - from) / v.beatsPerBar;
+    juce::String len = std::abs (bars - std::round (bars)) < 1.0e-6 ? juce::String ((int) std::round (bars)) + ((int) std::round (bars) == 1 ? " bar" : " bars")
+                                                                    : juce::String (to - from, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".") + " beats";
+    return pos (from) + glyph (" \xe2\x80\x93 ") + pos (to) + "  (" + len + ")";
+}
+
+void LanesPanel::updateSelectionBar()
+{
+    const auto sel = overlay.selection();
+    if (! sel || ! isVisible())
+    {
+        selectionBar.hide();
+        return;
+    }
+    auto& gen = processor.generation();
+    const bool idle = gen.getCurrentJob().state != JobState::Generating && gen.getCurrentJob().state != JobState::Submitting;
+    const bool canGenerate = processor.isLicensed() && idle && ! processor.session().editView().pendingFill;
+    selectionBar.showFor ({}, rangeText (sel->first, sel->second), canGenerate);
+    // Above the lane, centred on the selection, kept inside the lane.
+    const int w = selectionBar.preferredWidth(), h = 30;
+    const auto lane = outputLane.getBounds();
+    const auto t = processor.session().sessionTempo();
+    const double rate = processor.session().renderRate();
+    auto xFor = [&] (double beat) { return timeline.xForSample (beat * 60.0 / t.bpm * rate, lane.toFloat()); };
+    const int cx = juce::roundToInt ((xFor (sel->first) + xFor (sel->second)) * 0.5f);
+    auto r = juce::Rectangle<int> (w, h).withCentre ({ cx, lane.getY() - h / 2 - 2 });
+    r = r.withX (juce::jlimit (lane.getX(), juce::jmax (lane.getX(), lane.getRight() - w), r.getX()));
+    selectionBar.showFor (r, rangeText (sel->first, sel->second), canGenerate);
+    selectionBar.toFront (false);
+}
+
+void LanesPanel::splitAtSelectionOrPlayhead()
+{
+    auto& s = processor.session();
+    if (auto sel = overlay.selection())
+    {
+        s.editSplit (sel->first);
+        s.editSplit (sel->second);
+    }
+    else
+        s.editSplit (overlay.snapBeat (playheadBeat(), true));
+}
+
+void LanesPanel::deleteSelection()
+{
+    if (auto sel = overlay.selection())
+    {
+        processor.session().editDelete (sel->first, sel->second);
+        overlay.setSelection (std::nullopt);
+    }
+}
+
+void LanesPanel::fillWithNewTake()
+{
+    auto sel = overlay.selection();
+    if (! sel)
+        return;
+    auto res = processor.fillWithNewTake (sel->first, sel->second);
+    if (! res.ok)
+        processor.session().notify (res.error.userMessage.isNotEmpty() ? res.error.userMessage : ProviderError::defaultUserMessage (res.error.code), true);
+    else
+        overlay.setSelection (std::nullopt);
+}
+
+void LanesPanel::showTakesMenu()
+{
+    auto& s = processor.session();
+    const auto takes = s.takes();
+    juce::PopupMenu m;
+    m.addSectionHeader ("Plays everywhere");
+    for (int i = 0; i < (int) takes.size(); ++i)
+    {
+        const auto& t = takes[(size_t) i];
+        juce::String label = "Take " + juce::String (t.number) + "   " + fitText (t.name, font (type::body), 220.0f);
+        if (t.missing) label << "  (missing)";
+        m.addItem (100 + i, label, ! t.missing && ! t.loading, t.isBase);
+    }
+    juce::PopupMenu remove;
+    for (int i = 0; i < (int) takes.size(); ++i)
+        if (! takes[(size_t) i].isBase)
+            remove.addItem (200 + i, "Take " + juce::String (takes[(size_t) i].number) + (takes[(size_t) i].used ? "  (its bars go silent)" : ""));
+    m.addSeparator();
+    m.addSubMenu ("Remove a take", remove, remove.getNumItems() > 0);
+    juce::Component::SafePointer<LanesPanel> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&takesButton), [safe, takes] (int r)
     {
         if (safe == nullptr) return;
-        auto& ss = safe->processor.session();
-        if (r == 1) safe->openSampleChooser();
-        if (r == 2) ss.restoreGenerated();
-        if (r == 3 && src != nullptr) src->sourceFile.revealToUser();
-        if (r == 4) ss.clearOutput();
-        if (r == 5) ss.resetFit();
+        if (r >= 100 && r < 100 + (int) takes.size()) safe->processor.session().useTakeEverywhere (takes[(size_t) r - 100].id);
+        if (r >= 200 && r < 200 + (int) takes.size()) safe->processor.session().removeTake (takes[(size_t) r - 200].id);
     });
+}
+
+void LanesPanel::showFillFromMenu (juce::Component* target)
+{
+    auto sel = overlay.selection();
+    if (! sel)
+        return;
+    const auto takes = processor.session().takes();
+    juce::PopupMenu m;
+    for (int i = 0; i < (int) takes.size(); ++i)
+        m.addItem (100 + i, "Take " + juce::String (takes[(size_t) i].number) + "   " + fitText (takes[(size_t) i].name, font (type::body), 220.0f),
+                   takes[(size_t) i].ready);
+    juce::Component::SafePointer<LanesPanel> safe (this);
+    const auto range = *sel;
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [safe, takes, range] (int r)
+    {
+        if (safe != nullptr && r >= 100 && r < 100 + (int) takes.size())
+            safe->processor.session().editFill (range.first, range.second, takes[(size_t) r - 100].id);
+    });
+}
+
+void LanesPanel::showEditMenu (juce::Point<int> at)
+{
+    auto& s = processor.session();
+    const auto v = s.editView();
+    const auto sel = overlay.selection();
+    const auto t = s.sessionTempo();
+    const double rate = s.renderRate();
+    const double beatAtMouse = (double) at.x / juce::jmax (1, overlay.getWidth()) * (double) timeline.lengthSamples * t.bpm / (60.0 * rate);
+    const int clip = edit::clipAt (s.getState().arrangement, v.baseTake, v.totalBeats, beatAtMouse);
+    const auto takes = s.takes();
+
+    juce::PopupMenu m;
+    m.addItem (1, sel ? "Split at selection edges" : "Split at playhead", true, false);
+    m.addItem (2, "Delete selection", sel.has_value());
+    m.addSeparator();
+    m.addItem (3, "Fill selection with a new take", sel.has_value() && processor.isLicensed() && ! v.pendingFill);
+    juce::PopupMenu from;
+    for (int i = 0; i < (int) takes.size(); ++i)
+        from.addItem (100 + i, "Take " + juce::String (takes[(size_t) i].number), sel.has_value() && takes[(size_t) i].ready);
+    m.addSubMenu ("Fill selection from", from, sel.has_value() && takes.size() > 1);
+    if (v.pendingFill)
+        m.addItem (9, "Cancel the pending fill");
+    m.addSeparator();
+    m.addItem (4, "Cut", sel.has_value());
+    m.addItem (5, "Copy", sel.has_value());
+    m.addItem (6, "Paste at playhead", s.canPaste());
+    m.addItem (7, "Duplicate selection", sel.has_value());
+    if (clip >= 0)
+    {
+        m.addSeparator();
+        juce::PopupMenu gain;
+        const float gains[] = { 6.0f, 3.0f, 0.0f, -3.0f, -6.0f, -12.0f };
+        for (int i = 0; i < (int) std::size (gains); ++i)
+            gain.addItem (300 + i, (gains[i] > 0 ? "+" : "") + juce::String (gains[i], 0) + " dB", true,
+                          std::abs (v.clips[(size_t) clip].gainDb - gains[i]) < 0.01f);
+        m.addSubMenu ("Clip level", gain);
+        for (const auto& tk : takes)
+            if (tk.id == v.clips[(size_t) clip].take && ! tk.isBase)
+                m.addItem (8, "Use take " + juce::String (tk.number) + " everywhere");
+    }
+    m.addSeparator();
+    addOutputItems (m, 1000);
+
+    juce::Component::SafePointer<LanesPanel> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ overlay.localPointToGlobal (at), { 1, 1 } }),
+                     [safe, sel, clip, takes, v] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        auto& ss = safe->processor.session();
+        switch (r)
+        {
+            case 1: safe->splitAtSelectionOrPlayhead(); break;
+            case 2: safe->deleteSelection(); break;
+            case 3: safe->fillWithNewTake(); break;
+            case 4: if (sel) { ss.editCut (sel->first, sel->second); safe->overlay.setSelection (std::nullopt); } break;
+            case 5: if (sel) ss.editCopy (sel->first, sel->second); break;
+            case 6: ss.editPaste (safe->overlay.snapBeat (safe->playheadBeat(), false)); break;
+            case 7: if (sel) ss.editDuplicate (sel->first, sel->second); break;
+            case 8: if (clip >= 0) ss.useTakeEverywhere (v.clips[(size_t) clip].take); break;
+            case 9: ss.cancelPendingFill(); break;
+            default: break;
+        }
+        if (r >= 100 && r < 100 + (int) takes.size() && sel)
+            ss.editFill (sel->first, sel->second, takes[(size_t) r - 100].id);
+        if (r >= 300 && r < 306 && clip >= 0)
+        {
+            const float gains[] = { 6.0f, 3.0f, 0.0f, -3.0f, -6.0f, -12.0f };
+            ss.editClipGain (clip, gains[r - 300]);
+        }
+        if (r > 1000)
+            safe->handleOutputItem (r - 1000);
+    });
+}
+
+bool LanesPanel::handleKey (const juce::KeyPress& key)
+{
+    auto& s = processor.session();
+    const auto mods = key.getModifiers();
+    const bool cmd = mods.isCommandDown();
+    const int code = (int) juce::CharacterFunctions::toUpperCase ((juce::juce_wchar) key.getKeyCode());
+    const auto sel = overlay.selection();
+    if (! cmd && (code == 'S' || code == 's'))                      { splitAtSelectionOrPlayhead(); return true; }
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { deleteSelection(); return sel.has_value(); }
+    if (! cmd && (code == 'F' || code == 'f'))                      { fillWithNewTake(); return sel.has_value(); }
+    if (! cmd && (code == 'G' || code == 'g'))
+    {
+        const auto v = s.editView();
+        s.setGrid (v.gridBeats > 0.0 ? 0.0 : 1.0);
+        s.notify (v.gridBeats > 0.0 ? "Snap off: drag freely" : "Snap to beats");
+        return true;
+    }
+    if (key == juce::KeyPress::escapeKey && sel)                    { overlay.setSelection (std::nullopt); return true; }
+    if (cmd && code == 'A')                                         { overlay.selectAll(); return true; }
+    if (cmd && code == 'C' && sel)                                  { s.editCopy (sel->first, sel->second); s.notify ("Copied " + rangeText (sel->first, sel->second)); return true; }
+    if (cmd && code == 'X' && sel)                                  { s.editCut (sel->first, sel->second); overlay.setSelection (std::nullopt); return true; }
+    if (cmd && code == 'V')                                         { s.editPaste (overlay.snapBeat (playheadBeat(), false)); return true; }
+    if (cmd && code == 'D' && sel)                                  { s.editDuplicate (sel->first, sel->second); return true; }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +700,7 @@ void LanesPanel::paint (juce::Graphics& g)
     {
         auto r = ctxHeader;
         auto row1 = r.removeFromTop (18);
-        paintHeading (g, "Track Context", row1.withTrimmedRight (24));
+        paintHeading (g, "Your track", row1.withTrimmedRight (24));
         r.removeFromTop (2);
         auto row2 = r.removeFromTop (22);
         const auto tempo = s.sessionTempo();
@@ -399,16 +708,16 @@ void LanesPanel::paint (juce::Graphics& g)
         if (src != SessionController::TempoSource::Manual)
         {
             g.setColour (colours::text);
-            g.setFont (numberFont (15.0f, Weight::SemiBold));
+            g.setFont (numberFont (type::readout - 2.0f, Weight::SemiBold));
             g.drawText (bpmString (tempo.bpm), row2, juce::Justification::centredLeft);
         }
         const int bpmW = src == SessionController::TempoSource::Manual ? manualTempo.getWidth() - 6
-                                                                        : juce::GlyphArrangement::getStringWidthInt (numberFont (15.0f, Weight::SemiBold), bpmString (tempo.bpm));
+                                                                        : juce::GlyphArrangement::getStringWidthInt (numberFont (type::readout - 2.0f, Weight::SemiBold), bpmString (tempo.bpm));
         auto rest = row2.withTrimmedLeft (bpmW + 4);
         g.setColour (colours::faint);
-        g.setFont (font (11.0f, Weight::Medium));
+        g.setFont (font (type::meta, Weight::Medium));
         const auto bpmLabel = juce::String ("BPM") + (src == SessionController::TempoSource::Manual ? " (set)" : "");
-        g.drawText (bpmLabel, rest.removeFromLeft (juce::GlyphArrangement::getStringWidthInt (font (11.0f, Weight::Medium), bpmLabel) + 8),
+        g.drawText (bpmLabel, rest.removeFromLeft (juce::GlyphArrangement::getStringWidthInt (font (type::meta, Weight::Medium), bpmLabel) + 8),
                     juce::Justification::centredLeft);
         const auto analysis = s.contextAnalysis();
         juce::String key = analysis && analysis->keyKnown ? analysis->keyName() + (analysis->minor ? " minor" : " major") : juce::String();
@@ -417,7 +726,7 @@ void LanesPanel::paint (juce::Graphics& g)
         if (key.isNotEmpty())
         {
             g.setColour (colours::text);
-            g.setFont (font (13.0f, Weight::Medium));
+            g.setFont (font (type::title, Weight::Medium));
             g.drawText (key, rest, juce::Justification::centredLeft, true);
         }
 
@@ -425,8 +734,8 @@ void LanesPanel::paint (juce::Graphics& g)
         if (tempoMismatch)
         {
             g.setColour (colours::warn);
-            g.setFont (font (11.0f, Weight::Medium));
-            g.drawText ("Captured at " + bpmString (st.context->tempo.bpm) + glyph (" \xc2\xb7 host now ") + bpmString (*s.hostBpm()),
+            g.setFont (font (type::meta, Weight::Medium));
+            g.drawText ("Captured at " + bpmString (st.context->tempo.bpm) + ", DAW now " + bpmString (*s.hostBpm()),
                         row3, juce::Justification::centredLeft, true);
         }
         else if (analysis)
@@ -439,7 +748,7 @@ void LanesPanel::paint (juce::Graphics& g)
             {
                 auto cell = meters.removeFromLeft (24);
                 g.setColour (colours::faint);
-                g.setFont (font (9.5f, Weight::SemiBold));
+                g.setFont (font (10.5f, Weight::SemiBold));
                 g.drawText (names[i], cell.removeFromLeft (9), juce::Justification::centredLeft);
                 const int lit = levels[i] == Level::High ? 3 : levels[i] == Level::Medium ? 2 : 1;
                 for (int k = 0; k < 3; ++k)
@@ -449,19 +758,19 @@ void LanesPanel::paint (juce::Graphics& g)
                 }
             }
             g.setColour (colours::faint);
-            g.setFont (font (10.5f));
-            g.drawText (toString (analysis->stereo) + glyph (" \xc2\xb7 ") + toString (analysis->tonal), row3, juce::Justification::centredLeft, true);
+            g.setFont (font (type::meta));
+            g.drawText (toString (analysis->stereo) + ", " + toString (analysis->tonal).toLowerCase(), row3, juce::Justification::centredLeft, true);
         }
         else if (st.context && ! s.hasContext())
         {
             g.setColour (colours::warn);
-            g.setFont (font (11.0f));
+            g.setFont (font (type::meta));
             g.drawText ("Capture unavailable", row3, juce::Justification::centredLeft);
         }
         else
         {
             g.setColour (colours::faint);
-            g.setFont (font (10.5f));
+            g.setFont (font (type::meta));
             g.drawText (src == SessionController::TempoSource::Host ? "Tempo from the DAW" : "No tempo from the DAW", row3, juce::Justification::centredLeft);
         }
     }
@@ -469,34 +778,34 @@ void LanesPanel::paint (juce::Graphics& g)
     // ---- output header ----
     {
         auto r = outHeader;
-        paintHeading (g, "AI / Sample", r.removeFromTop (18).withTrimmedRight (24));
+        paintHeading (g, "Sound", r.removeFromTop (18).withTrimmedRight (24 + takesButton.getWidth()));
         r.removeFromTop (2);
         const auto src = s.outputSource();
         g.setColour (src != nullptr ? colours::text : colours::faint);
-        g.setFont (font (12.5f, Weight::Medium));
-        const auto name = src != nullptr ? src->displayName : juce::String ("Nothing loaded");
-        g.drawText (fitText (name, font (12.5f, Weight::Medium), (float) r.getWidth()), r.removeFromTop (20), juce::Justification::centredLeft, false);
+        g.setFont (font (type::body + 0.5f, Weight::Medium));
+        const auto name = src != nullptr ? src->displayName : juce::String ("Nothing yet");
+        g.drawText (fitText (name, font (type::body + 0.5f, Weight::Medium), (float) r.getWidth()), r.removeFromTop (20), juce::Justification::centredLeft, false);
         g.setColour (colours::faint);
-        g.setFont (font (10.5f));
-        g.drawText (fitText (outputDetail(), font (10.5f), (float) r.getWidth()), r.removeFromTop (16), juce::Justification::centredLeft, false);
+        g.setFont (font (type::meta));
+        g.drawText (fitText (outputDetail(), font (type::meta), (float) r.getWidth()), r.removeFromTop (16), juce::Justification::centredLeft, false);
     }
 
     // ---- fit strip ----
     paintHeading (g, "Fit", fitHeader);
     g.setColour (pitch.isEnabled() ? colours::dim : colours::disabled);
-    g.setFont (numberFont (11.5f));
+    g.setFont (numberFont (type::label));
     const double pv = pitch.getValue();
     g.drawText ((pv > 0.0 ? "+" : "") + juce::String (pv, 1) + " st", pitchValue, juce::Justification::centredLeft);
-    g.setColour (colours::faint);
+    g.setColour (colours::dim);
     g.setFont (labelFont());
-    g.drawText ("PITCH", pitchLabel, juce::Justification::centredLeft);
+    g.drawText ("Pitch", pitchLabel, juce::Justification::centredLeft);
     const auto fit = s.fitStatus();
     g.setColour (fit.error.isNotEmpty() ? colours::warn : colours::dim);
-    g.setFont (font (11.5f));
+    g.setFont (font (type::label));
     auto info = fitInfo;
     if (fit.rendering)
         drawProgress (g, info.removeFromRight (80).withSizeKeepingCentre (80, 3).toFloat(), fit.progress);
-    g.drawText (fitText (fitSummary(), font (11.5f), (float) info.getWidth() - 8.0f), info, juce::Justification::centredLeft, false);
+    g.drawText (fitText (fitSummary(), font (type::label), (float) info.getWidth() - 8.0f), info, juce::Justification::centredLeft, false);
 
     // separators
     paintSeparator (g, outHeader.getBottom() + 6, 0, getWidth());
@@ -507,9 +816,14 @@ void LanesPanel::layoutLaneHeader (juce::Rectangle<int> area, bool isContext)
     auto r = area;
     auto row1 = r.removeFromTop (18);
     (isContext ? ctxMenu : outMenu).setBounds (row1.removeFromRight (22).withSizeKeepingCentre (22, 18));
+    if (! isContext)
+    {
+        const int w = juce::GlyphArrangement::getStringWidthInt (font (type::label, Weight::Medium), takesButton.getButtonText()) + 18;
+        takesButton.setBounds (row1.removeFromRight (w).withSizeKeepingCentre (w, 20));
+    }
     if (isContext)
         manualTempo.setBounds (r.getX() - 3, r.getY() + 2,
-                               juce::GlyphArrangement::getStringWidthInt (numberFont (15.0f, Weight::SemiBold), manualTempo.getText()) + 12, 22);
+                               juce::GlyphArrangement::getStringWidthInt (numberFont (type::readout - 2.0f, Weight::SemiBold), manualTempo.getText()) + 12, 22);
 
     // Bottom up: [M][S] gain, then the lane's main action.
     auto mix = area.removeFromBottom (20);
@@ -527,7 +841,9 @@ void LanesPanel::layoutLaneHeader (juce::Rectangle<int> area, bool isContext)
 void LanesPanel::resized()
 {
     auto r = getLocalBounds().withTrimmedLeft (space::l).withTrimmedRight (space::l);
-    rulerArea = r.removeFromTop (20).withTrimmedLeft (headerWidth);
+    auto rulerRow = r.removeFromTop (24);
+    snap.setBounds (rulerRow.withWidth (headerWidth - space::m).withSizeKeepingCentre (headerWidth - space::m, 22).withX (rulerRow.getX()));
+    rulerArea = rulerRow.withTrimmedLeft (headerWidth);
     ruler.setBounds (rulerArea);
 
     auto fitRow = r.removeFromBottom (32);
@@ -541,6 +857,7 @@ void LanesPanel::resized()
     contextLane.setBounds (ctxRow);
     outHeader = outRow.removeFromLeft (headerWidth).withTrimmedRight (space::m);
     outputLane.setBounds (outRow);
+    overlay.setBounds (outputLane.getLocalBounds());
     layoutLaneHeader (ctxHeader, true);
     layoutLaneHeader (outHeader, false);
 

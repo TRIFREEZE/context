@@ -510,6 +510,8 @@ void GenerationController::runPipeline (const JobPtr& job, IAudioGenerationProvi
     if (request.seed) result.metadata.set ("seed", *request.seed);
     if (request.variationOfGenerationId.isNotEmpty()) result.metadata.set ("variationOf", request.variationOfGenerationId);
     result.metadata.set ("type", toId (request.type));
+    if (request.audioContext.has_value() && request.contextMode.isNotEmpty())
+        result.metadata.set ("contextMode", request.contextMode);
 
     if (deps.onCompleted)
         deps.onCompleted (result);

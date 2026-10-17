@@ -5,6 +5,8 @@
 
 namespace context
 {
+namespace { constexpr juce::int64 maxAudioContextBytes = 16 * 1024 * 1024; }  // ~90 s of 44.1 kHz stereo 16-bit
+
 LocalGenerationBridgeProvider::LocalGenerationBridgeProvider (Options o)
     : options (std::move (o))
 {
@@ -110,7 +112,7 @@ SubmitResult LocalGenerationBridgeProvider::submit (const GenerationRequest& req
     const bool sendAudio = request.audioContext.has_value() && options.profile.supportsAudioUpload
                         && getCapabilities().has (Feature::AudioConditioning)
                         && request.audioContext->wavFile.existsAsFile()
-                        && request.audioContext->wavFile.getSize() <= 4 * 1024 * 1024;
+                        && request.audioContext->wavFile.getSize() <= maxAudioContextBytes;
     if (sendAudio)
         request.audioContext->wavFile.loadFileAsData (audioContext);
 

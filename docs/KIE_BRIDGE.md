@@ -45,12 +45,41 @@ Only one bridge can use port 3000. Close the reference (test-tone) bridge first.
 
 * The prompt sent is Context's enhanced prompt, shortened to Kie.ai's limits: 500 characters
   for Sounds, 3000 for songs.
+* Suno Sounds has **no length parameter** (the docs list none). Context asks for the bar length it
+  needs, the bridge passes tempo and loop flags, and Context itself trims dead space and fits the
+  result to exactly N bars.
 * Model: V6. You can change it in `config.json`; see below.
 * Kie.ai usually returns two takes. The bridge uses the first.
 * Audio comes back to Context as **WAV**:
   * The bridge first asks Kie.ai for its WAV conversion. That may use a few extra credits.
   * If the conversion isn't available, the bridge decodes Kie.ai's MP3 to WAV itself, using the
     `miniaudio` package that the .bat installs.
+
+### With your track ("Send my track" in Context)
+
+Turn on **Send my track** in Context (it asks for permission once). Context then sends your
+captured 8 bars to the bridge, and the bridge:
+
+1. uploads them to Kie.ai's **File Upload API** (`kieai.redpandaai.co/api/file-stream-upload`;
+   Kie.ai deletes uploads after 24 hours), then
+2. runs one of these, depending on what you picked next to the toggle:
+
+| Context setting | Type | Kie.ai steps | You get |
+|---|---|---|---|
+| **Layer** | Vocal | `ai-music-api/add-vocals` on your bars, then `ai-music-api/separate-vocals` (2 stems) | only the new vocal, in time and in key with your track |
+| **Layer** | anything else | `ai-music-api/upload-and-cover-audio` (instrumental, in the prompt's style), then `separate-vocals` with `split_stem` | the stem your prompt names: drums, bass, guitar, keys (piano, rhodes, bells), strings, brass, woodwinds, synth (pad, lead, pluck), percussion or FX. If the prompt names none, the whole result. |
+| **Restyle** | any | `ai-music-api/upload-and-cover-audio` with `duration` = your bars (Kie.ai's minimum is 10 s) | your bars re-imagined in the prompt's style |
+| **Continue** | any | `ai-music-api/upload-and-extend-audio` with `continue_at` = the end of your bars | what comes next. If Kie.ai returns your bars plus the continuation, the bridge detects that and cuts your part off. |
+
+* **Credits:** every step is a paid Kie.ai task. A Layer request is two (generation + separation),
+  plus the WAV conversion when it applies. Check your balance with `run-kie-bridge.bat --check`.
+* **Timing:** Layer and Continue results start exactly on your bar 1 (or the bar after your
+  capture), so Context keeps every sample where it is: no stretching, no silence trimming.
+* **Settings** (in `config.json`): `context_audio_weight` (0–1, default `0.8`: how strongly Kie.ai
+  follows your audio) and `negative_tags` (default `low quality, muffled, clipping`).
+* **What isn't known yet:** Kie.ai's docs don't say how long add-vocals results are or exactly how
+  the stem files are named. The bridge accepts every documented result shape and falls back to the
+  full result when the requested stem isn't there; its window says which stem it kept.
 
 Generation takes roughly 20 s–3 min, depending on Kie.ai's queue. Context waits up to 10
 minutes. **Cancel** stops the wait, but credits Kie.ai already used are not refunded.
@@ -73,6 +102,8 @@ minutes. **Cancel** stops the wait, but credits Kie.ai already used are not refu
 | `sound_model` | `V6`, `V6_MINI`, `V6_WILD`, `V5_5`, `V5` |
 | `music_model` | `V6`, `V6_MINI`, `V6_WILD`, `V5_5`, `V5`, `V4_5ALL`, `V4_5PLUS`, `V4_5`, `V4` |
 | `convert_to_wav` | `false` skips Kie.ai's WAV conversion and always decodes the MP3 locally. That saves credits but is lower quality. |
+| `context_audio_weight` | `0`–`1` (default `0.8`). How closely track-context requests follow your audio. |
+| `negative_tags` | Styles to avoid in track-context requests (Kie.ai requires the field). Default `low quality, muffled, clipping`. |
 
 You can also use the `KIE_API_KEY` environment variable instead of the saved key.
 
@@ -123,6 +154,13 @@ Check it first when something goes wrong.
 * **Not legal advice.** If you plan to sell sounds made this way, check with a lawyer.
 
 ## How this was tested (and what wasn't)
+
+Track context (V2.1): the fake Kie.ai server also implements the File Stream Upload API and the
+add-vocals, upload-and-cover-audio, upload-and-extend-audio and separate-vocals models with the
+field rules from docs.kie.ai, and the end-to-end test checks the upload, every mode's request
+fields, stem selection, the continue-trim and refusal of a broken WAV. The real services were not
+called.
+
 
 * **Tested automatically** (`tests/integration/run_kie_bridge_e2e.py`, part of CTest and GitHub
   Actions). These tests run against a **fake Kie.ai server** that follows the request rules in

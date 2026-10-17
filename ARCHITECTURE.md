@@ -9,6 +9,8 @@ and kept in sync with the code afterwards.
 * **Part II** (sections V2.1–V2.14) — the Context V2 workspace added on top: captured
   track context, the two-lane timeline, musical fitting / time-stretching, the effect
   rack, export and drag-to-DAW. Includes **HOW TO ADD A NEW EFFECT** (V2.7).
+* **Part III** (V2.15–V2.19) — takes and editing, undo/redo, sending the track context to the
+  bridge, dead-space removal, the motion system, in-plugin sheets and keyboard shortcuts.
 
 ---
 
@@ -61,7 +63,7 @@ plugin/Source/
   Storage/               Logger, HistoryStore, CacheManager
   Security/              compiled-in public key handling
   UI/                    design system (Theme, Controls) and all components; V2 Workspace
-  Resources/fonts        Inter (SIL OFL), embedded via juce_add_binary_data
+  Resources/fonts        Barlow (SIL OFL), embedded via juce_add_binary_data
 third_party/monocypher   Ed25519 signature verification (vendored, BSD-2/CC0)
 backend/                 licensing server + admin CLI + tests
 tools/reference_bridge   stdlib-only Python test bridge implementing the Context Bridge Protocol
@@ -550,7 +552,8 @@ Bitcrusher, Downsampler, Utility, Stereo.
    toggles for on/off; double-click resets, typing a value works, tooltips come from the
    spec). For a custom visual (like the EQ curve), add a branch keyed on `typeId()` in
    `EffectRackPanel::rebuildInspector` (`plugin/Source/UI/EffectRack.cpp`), as `EqCurve` does.
-6. **Compile**: add any new `.cpp` to `plugin/Sources.cmake` and build. The generic tests in
+6. **Compile**: new `.cpp` files under `plugin/Source` are picked up automatically
+   (`plugin/Sources.cmake` globs them; re-run the CMake configure step once). The generic tests in
    `tests/unit/EffectsTests.cpp` iterate the registry, so the new effect is automatically
    checked for: finite, sane output at 44.1/48/96 kHz and odd block sizes; parameter
    clamp / text / state round trips; and "every visible control changes the audio".
@@ -566,7 +569,7 @@ The plugin state tree (`getStateInformation`) keeps every Part I property and ad
 | Property | Content |
 |---|---|
 | `version` | `2` (projects from 1.x have `1` or nothing) |
-| `session` | `SessionState::toVar()` JSON: length in bars, manual tempo/signature, fit mode / algorithm / pitch, lane gains, mute/solo, play mode, loop, A/B, output source (`generatedId` *or* absolute `importedPath`), the replaced generated id (for *Restore generated*), and the context cache id + metadata |
+| `session` | `SessionState::toVar()` JSON: length in bars, manual tempo/signature, fit mode / algorithm / pitch / tighten, lane gains, mute/solo, play mode, loop, A/B, the base take (also written to the V2.0 fields `generatedId` / `importedPath`), the take list, the arrangement (clips in beats), the snap grid, the replaced generated id (for *Restore generated*), and the context cache id + metadata |
 | `chain` | `EffectChain::toVar()` JSON |
 
 * **No audio and no credentials are ever stored in the project** — only ids and paths.
@@ -641,7 +644,7 @@ Useful test runs: `ContextTests --unit` (all unit tests), `ContextTests --catego
 ## V2.13 GitHub build
 
 Unchanged workflow (`.github/workflows/build-windows-vst3.yml`, see section 12). V2 adds
-no secrets and no new external dependencies: the Inter font is compiled in from
+no secrets and no new external dependencies: the Barlow font is compiled in from
 `plugin/Resources/fonts` with `juce_add_binary_data`, and all DSP is in-tree. Push and
 download the `Context-Windows-VST3` artifact.
 
@@ -658,7 +661,85 @@ download the `Context-Windows-VST3` artifact.
 * The audition engine plays inside the plugin; it is not tied to the DAW transport. Use
   drag-to-DAW to place the sound on the DAW timeline.
 * Capturing needs the DAW to play audio *through* Context (put it on the master or a bus).
-* No undo stack yet — reset actions exist for effect, chain, fit and source
-  ("Restore original/generated"), and the immutable-asset design is ready for a command
-  history.
 * Effect presets per effect are not implemented; the whole chain is saved with the project.
+* Undo history lives in memory: closing and reopening the project starts a fresh history.
+
+
+---
+
+# Part III — V2.1: takes, editing, undo, track context, motion
+
+## V2.15 Takes and the arrangement
+
+`Session/EditModel.h` is a pure, unit-tested model:
+
+* **Take**: one version of the sound (a generation id or a sample path). Every take is fitted
+  to the same N bars at the same tempo, so bar 3 of take 1 and bar 3 of take 4 line up.
+  The session keeps up to 12; the oldest unused ones drop off.
+* **Clip**: `{take, start, length, offset, stretch, gain}`, all positions in **beats**, so edits
+  survive tempo and sample-rate changes. Clips never overlap; gaps are silence.
+* **Edit**: `active == false` means "no edits" (the base take plays as before; old projects load
+  like this). Operations: split, remove range, place (overwrite), fill from take, move, trim,
+  stretch, clip gain, copy/paste. Each returns a normalised edit; `simplify` turns an edit that
+  equals the plain base take back into "no edits".
+* **Render** (`edit::render`, worker thread): copies each clip from its fitted take with 2.5 ms
+  crossfades at joins (none for a plain split, so splitting is bit-exact), stretches clips whose
+  `stretch != 1` with the session's algorithm, and outputs exactly N bars.
+
+`SessionController::requestRender()` fits every loaded take whose fit key (asset, fit settings,
+bars, tempo, rate) changed, composes the arrangement, and publishes the result as the output lane
+(what plays, what is exported, what the waveform shows).
+
+**Fill with a new take**: `ContextAudioProcessor::fillWithNewTake (from, to)` enqueues a request in
+the same style (the base take's request, including its context mode) and calls
+`session.requestFill`. When that generation arrives, `generationArrived` adds it as a take and
+fills exactly that range; a failed or cancelled job clears the pending range. Any other
+generation becomes the new base take.
+
+## V2.16 Undo / redo
+
+Snapshot-based (`SessionController`): a snapshot is the `SessionState` plus the effect chain's
+state. The session timer commits a step when the state has been quiet for ~0.25 s, and knob drags
+are wrapped in `beginGesture / endGesture` so a whole drag is one step. Undo applies a snapshot
+with `reconcile()`, which does only the work that changed: chain parameters in place
+(`EffectChain::applyState` keeps reverb tails when only values changed), context reload from the
+cache, take loading, a re-render. Transport, A/B and loop are not part of history. History is
+per editor session (200 steps) and resets when a project loads.
+
+## V2.17 Track context to the bridge
+
+The plugin sends the **captured context** (exact bars, 44.1 kHz stereo, 16-bit) as
+`audioContext`, with `contextMode` (`layer`, `cover`, `extend`) from the modes the bridge lists
+in its capabilities. Results generated in `layer` or `extend` mode are marked
+`alignedToContext`: the fitter never trims or stretches them, so they stay in time with the
+track. The Kie.ai bridge maps the modes to documented Kie.ai models (upload → add-vocals /
+upload-and-cover-audio / upload-and-extend-audio, then separate-vocals for layers); see
+`docs/KIE_BRIDGE.md`.
+
+**Dead space**: `timefit::tighten` removes silence before the first sound (−45 dB below the peak,
+2 ms pre-roll) and dead air after the last (> 0.5 s at −60 dB) from **generated** audio before
+fitting. Imported files, context-aligned results and designed loops that already sit on the bar
+grid are left alone. Suno Sounds has no length parameter, so this is how generations start on bar 1.
+
+## V2.18 Motion and dialogs
+
+* `UI/Motion.h`: one frame clock (the editor's `VBlankAttachment`, with a 60 Hz timer fallback)
+  drives `motion::Value` / `motion::Rect` (owned animated values) and `motion::follow`, which lets
+  the look-and-feel animate any JUCE control (hover, press, toggle fills, knob arcs, slider
+  thumbs) from paint code. **Settings → Reduce motion** turns everything into jumps; tests call
+  `motion::setAllowed (false)` so screenshots are deterministic.
+* What moves: the tab underline and page fade, segmented-control pills, button/toggle fades,
+  knob values that jump (reset, undo), effect chips sliding when reordered, the inspector fading
+  in, waveforms cross-fading when the sound changes, toasts and the selection bar sliding in,
+  sheets settling, the pending-fill stripes, the status dot while generating.
+* `UI/Sheet.h`: every confirmation, warning and "details" view is an in-plugin sheet over a dimmed
+  window (Esc / outside click = cancel), presented by the editor (`SheetHost`). No OS message
+  boxes are used any more; file choosers stay native.
+* Type is Barlow (SIL OFL), embedded; colours are tokens in `UI/Theme.h` (silver = your track,
+  teal = the sound and "go", amber = recording).
+
+## V2.19 Keyboard
+
+The editor handles global keys (undo/redo, pages, `?`), the workspace handles transport and
+capture keys, and `LanesPanel::handleKey` handles editing keys. Keys typed into the prompt stay
+there (Esc returns focus to the plugin). Letter keys are matched case-insensitively.

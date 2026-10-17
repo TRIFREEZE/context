@@ -64,6 +64,7 @@ juce::var Settings::toVar() const
     o->setProperty ("captureSeconds", captureSeconds);
     o->setProperty ("useTrackContext", useTrackContext);
     o->setProperty ("promptExpansion", promptExpansion);
+    o->setProperty ("reduceMotion", reduceMotion);
     o->setProperty ("allowSendAudioContext", allowSendAudioContext);
     o->setProperty ("previewGainDb", previewGainDb);
     o->setProperty ("logLevel", logLevel);
@@ -96,6 +97,7 @@ Settings Settings::fromVar (const juce::var& v)
     num ("captureSeconds", s.captureSeconds);
     bl  ("useTrackContext", s.useTrackContext);
     bl  ("promptExpansion", s.promptExpansion);
+    bl  ("reduceMotion", s.reduceMotion);
     bl  ("allowSendAudioContext", s.allowSendAudioContext);
     num ("previewGainDb", s.previewGainDb);
     str ("logLevel", s.logLevel);

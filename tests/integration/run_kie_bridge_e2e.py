@@ -9,7 +9,12 @@
 Used by CTest. Exit code 0 = pass.
 """
 import argparse
+import base64
+import io
 import json
+import math
+import struct
+import wave
 import os
 import shutil
 import socket
@@ -115,6 +120,30 @@ def fetch_wav(bridge, status):
 
 def upstream_log(api):
     return http("GET", api + "/_test/log")[1]
+
+
+def pulse_wav(seconds=4.0, rate=44100, bpm=120):
+    """A stereo 16-bit 'beat': decaying 120 Hz hits on every quarter note (varied envelope)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        beat = 60.0 / bpm
+        frames = bytearray()
+        for i in range(int(seconds * rate)):
+            t = i / rate
+            ph = t % beat
+            amp = math.exp(-ph * 18.0) * (1.0 if int(t / beat) % 2 == 0 else 0.55)
+            v = int(math.sin(2 * math.pi * 120 * t) * 20000 * amp)
+            frames += struct.pack("<hh", v, v)
+        w.writeframes(bytes(frames))
+    return buf.getvalue()
+
+
+def wav_seconds(data):
+    with wave.open(io.BytesIO(data)) as w:
+        return w.getnframes() / float(w.getframerate())
 
 
 def have_miniaudio():
@@ -238,6 +267,76 @@ def main():
         check(st == 404, "unknown job is 404")
         st, s = http("POST", bridge + "/context/v1/generate", {"protocol": "context-bridge-v1", "prompt": "  "})
         check(st == 400, "empty prompt is rejected")
+
+        print("Track context (audio conditioning)")
+        st, c = http("GET", bridge + "/context/v1/capabilities")
+        check("audio_conditioning" in c.get("features", []) and c.get("contextModes") == ["layer", "cover", "extend"],
+              f"capabilities announce audio_conditioning + context modes ({c})")
+        ctx_wav = pulse_wav(4.0)
+        actx = {"format": "wav", "encoding": "base64", "data": base64.b64encode(ctx_wav).decode(), "bars": 2}
+
+        before = len(upstream_log(api))
+        st, s = generate(bridge, "dark distorted female vocal chop", "vocal", audioContext=actx, contextMode="layer")
+        sent = upstream_log(api)[before:]
+        models = [x["model"] for x in sent]
+        check(models[:3] == ["upload", "ai-music-api/add-vocals", "ai-music-api/separate-vocals"],
+              f"vocal layer: upload -> add-vocals -> separate-vocals ({models})")
+        if len(sent) >= 3:
+            av = sent[1]["input"]
+            check(av.get("vocal_gender") == "f" and av.get("style") and av.get("title") and av.get("negative_tags")
+                  and "/files/context-bridge/" in av.get("upload_url", ""),
+                  f"add-vocals gets the uploaded context, style, title, gender ({av})")
+            check(sent[2]["input"].get("type") == "separate_vocal" and sent[2]["input"].get("task_id"),
+                  "separation uses the add-vocals task + clip, 2-stem mode")
+            check(sent[0]["input"]["bytes"] == len(ctx_wav), "the exact context WAV is uploaded")
+        if mp3_ok:
+            check(s.get("status") == "complete", f"vocal layer completes ({s})")
+            if s.get("status") == "complete":
+                ok, data = fetch_wav(bridge, s)
+                check(ok, "vocal stem is served as WAV")
+        else:
+            check(s.get("status") == "failed" and "miniaudio" in s.get("error", ""), "stems need the MP3 decoder")
+
+        before = len(upstream_log(api))
+        st, s = generate(bridge, "dark piano melody", "instrument", audioContext=actx, contextMode="layer")
+        sent = upstream_log(api)[before:]
+        models = [x["model"] for x in sent]
+        check(models[:3] == ["upload", "ai-music-api/upload-and-cover-audio", "ai-music-api/separate-vocals"],
+              f"instrument layer: upload -> cover -> split stems ({models})")
+        if len(sent) >= 3:
+            cv = sent[1]["input"]
+            check(cv.get("instrumental") is True and cv.get("duration") == 10 and "prompt" not in cv,
+                  f"cover is instrumental, duration clamped to Kie's 10 s minimum ({cv})")
+            check(sent[2]["input"].get("type") == "split_stem", "instrument layer separates into stems")
+        if mp3_ok:
+            check(s.get("status") == "complete", f"instrument layer completes ({s})")
+            check("keeping the keyboard stem" in open(bproc.log_path).read(), "'piano' picks the keyboard stem")
+
+        before = len(upstream_log(api))
+        st, s = generate(bridge, "lofi tape version", "loop", audioContext=actx, contextMode="cover")
+        sent = upstream_log(api)[before:]
+        models = [x["model"] for x in sent]
+        check(s.get("status") == "complete" and "ai-music-api/separate-vocals" not in models
+              and "ai-music-api/upload-and-cover-audio" in models, f"restyle = one cover, no separation ({models})")
+
+        before = len(upstream_log(api))
+        st, s = generate(bridge, "keep the groove going", "loop", audioContext=actx, contextMode="extend")
+        sent = upstream_log(api)[before:]
+        ext = [x for x in sent if x["model"] == "ai-music-api/upload-and-extend-audio"]
+        check(bool(ext) and 0 < ext[0]["input"]["continue_at"] < 4.0 and ext[0]["input"]["instrumental"] is True,
+              f"continue uses upload-and-extend with continue_at inside the context ({ext[:1]})")
+        check(s.get("status") == "complete", f"continue completes ({s})")
+        if s.get("status") == "complete":
+            ok, data = fetch_wav(bridge, s)
+            secs = wav_seconds(data) if ok else 0
+            check(ok and 2.5 < secs < 3.6, f"result that repeats the context first is cut to the new part only ({secs:.2f} s)")
+
+        bad = dict(actx, data=base64.b64encode(b"not a wav at all").decode())
+        st, r = http("POST", bridge + "/context/v1/generate",
+                     {"protocol": "context-bridge-v1", "prompt": "x", "type": "vocal", "audioContext": bad})
+        check(st == 400 and r.get("errorCode") == "audio_context_rejected", f"broken context WAV is refused ({st} {r})")
+        log_text = open(bproc.log_path).read()
+        check("test-key" not in log_text, "API key still never appears in the bridge's output")
 
         print("Wrong API key")
         bad_bridge, _ = start_bridge(api, key="wrong-key-123")

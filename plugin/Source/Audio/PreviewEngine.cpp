@@ -46,8 +46,14 @@ void PreviewEngine::stop()
 
 void PreviewEngine::rewind()
 {
-    rewindRequested = true;
-    positionAtomic.store (0);
+    seek (0);
+}
+
+void PreviewEngine::seek (juce::int64 samples)
+{
+    samples = juce::jmax<juce::int64> (0, samples);
+    seekRequest.store (samples);
+    positionAtomic.store (samples);
 }
 
 void PreviewEngine::setLaneGainDb (int lane, float db)
@@ -175,8 +181,13 @@ void PreviewEngine::renderAdd (juce::AudioBuffer<float>& out, int numSamples, bo
 {
     swapProgramIfPending();
 
-    if (rewindRequested.exchange (false))
-        pos = 0;
+    if (const auto target = seekRequest.exchange (-1); target >= 0)
+    {
+        const auto len = current != nullptr ? current->timelineLength() : 0;
+        pos = len > 0 ? target % len : 0;
+        if (active && ! stopping)
+            startRamp = 0.0f;   // fade in from the new position: no click
+    }
     if (stopRequested.exchange (false) && active && ! stopping)
     {
         stopping = true;

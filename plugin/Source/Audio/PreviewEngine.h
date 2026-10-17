@@ -53,6 +53,8 @@ public:
     void play();
     void stop();
     void rewind();
+    /** Jump to a timeline position (sample), click-free while playing. */
+    void seek (juce::int64 samples);
     void setLooping (bool b)                { looping.store (b); }
     void setMode (Mode m)                   { mode.store ((int) m); }
     void setLaneGainDb (int lane, float db);
@@ -92,7 +94,8 @@ private:
     juce::AbstractFifo retireFifo { retireCapacity };
     std::array<Program*, retireCapacity> retired {};
 
-    std::atomic<bool> playRequested { false }, stopRequested { false }, rewindRequested { false };
+    std::atomic<bool> playRequested { false }, stopRequested { false };
+    std::atomic<juce::int64> seekRequest { -1 };
     std::atomic<bool> playing { false }, looping { true }, compareOriginal { false };
     std::atomic<int> mode { (int) Mode::Both };
     std::array<std::atomic<float>, 2> laneGain { 1.0f, 1.0f };

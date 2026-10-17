@@ -127,3 +127,27 @@ Run on Linux x64 (GCC, Ninja, Release, JUCE 8.0.12) — **not** on Windows:
 plus capture against FL Studio's real transport and tempo reporting, MP3 import through
 Windows Media components, drag-to-DAW of the processed file into FL Studio's playlist, and
 sample-rate changes inside FL Studio. Use the checklist in `docs/OPERATING_GUIDE.md` §U2.
+
+
+---
+
+## V2.1 — takes, editing, undo, track context, motion (October 2026)
+
+Linux x64 (GCC, Release), same as V2. **Not** run on Windows or in FL Studio.
+
+| Check | Result |
+|---|---|
+| Full build, `-Wall -Wextra` | 0 warnings in project sources |
+| `ctest` (5 suites incl. `kie_bridge_e2e` with the track-context pipeline against the fake Kie.ai) | 5/5 passed |
+| `ContextTests --unit` | ~5,700 checks, 0 failures |
+| Dead space: leading silence removed to within 4 ms of bar 1, tail dead air removed, imported files and context-aligned results untouched | pass |
+| Arrangement: split is bit-exact, delete silences with 2.5 ms fades, fill crossfades, move/trim/stretch keep clips non-overlapping, junk state rejected | pass |
+| Takes + fill: a pending fill lands only in its range; other generations become the base take | pass |
+| Undo/redo: fills, fit changes, effects, a 0.8 s knob drag as one step | pass |
+| Keyboard through the real editor: Space, S, Delete, Ctrl+Z, Ctrl+Shift+Z, L, 1/3 | pass |
+| Kie bridge track context: upload, add-vocals + 2-stem separation, cover + 12-stem pick by prompt, restyle, continue with automatic trim, broken WAV refused | pass (fake Kie.ai) |
+| Screenshots at 980 / 1120 / 1600 px: empty, armed, loaded, edited, selection, effects, shortcuts sheet, history, settings | reviewed |
+
+Not verified: real Kie.ai responses for the new models (stem file naming, add-vocals length),
+animation smoothness on a real Windows display (the vblank clock was only exercised headless),
+and FL Studio's handling of plugin keyboard focus.

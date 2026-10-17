@@ -17,6 +17,16 @@ What gets generated
     "#song" in prompt  A full Suno song (model ai-music-api/generate). Instrumental unless the
                        Context type is "Vocal".
 
+    With track context (Context's "Audio ctx" on; your captured 8 bars are uploaded to Kie.ai's
+    temporary file storage, deleted by Kie.ai after 24 h):
+      Layer   Vocal type: ai-music-api/add-vocals on your 8 bars, then ai-music-api/separate-vocals
+              -> only the new vocal, in time and in key with your track.
+              Other types: ai-music-api/upload-and-cover-audio in the prompt's style, then
+              separate-vocals (split_stem) -> the stem matching your prompt (drums, bass, keys...).
+      Restyle ai-music-api/upload-and-cover-audio: your 8 bars re-imagined in the prompt's style.
+      Continue ai-music-api/upload-and-extend-audio: what comes after your 8 bars.
+    Each Kie.ai step costs credits; a Layer request is two paid steps.
+
 Security
     * The API key is stored in your user profile (%APPDATA%\\Context Kie Bridge\\config.json),
       never in the Context plugin, the project folder, GitHub or the DAW project. It is only
@@ -29,7 +39,9 @@ conversion is unavailable); scripts\\run-kie-bridge.bat installs it automaticall
 """
 
 import argparse
+import base64
 import json
+import math
 import os
 import re
 import sys
@@ -47,13 +59,18 @@ try:  # optional: MP3 -> WAV fallback
 except Exception:  # pragma: no cover - depends on the user's machine
     miniaudio = None
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PROTOCOL = "context-bridge-v1"
 TYPES = ["one_shot", "loop", "vocal", "instrument", "percussion", "texture", "fx", "melody"]
 DEFAULT_API_BASE = "https://api.kie.ai"
+# File Upload API host per docs.kie.ai/file-upload-api/quickstart (files are deleted after 24 h).
+DEFAULT_UPLOAD_BASE = "https://kieai.redpandaai.co"
 USER_AGENT = f"ContextKieBridge/{VERSION}"
 
-MAX_BODY = 16 * 1024 * 1024           # largest request Context sends (audio context is small)
+MAX_BODY = 32 * 1024 * 1024           # largest request Context sends (base64 audio context included)
+MAX_CONTEXT_BYTES = 20 * 1024 * 1024  # decoded audio context WAV
+MAX_CONTEXT_SECONDS = 120.0
+CONTEXT_MODES = ["layer", "cover", "extend"]
 MAX_DOWNLOAD = 100 * 1024 * 1024      # Context refuses audio above 100 MB anyway
 MAX_JSON = 4 * 1024 * 1024
 MAX_CONCURRENT_JOBS = 3
@@ -146,22 +163,23 @@ class UpstreamError(Exception):
 
 
 class KieClient:
-    def __init__(self, api_base: str, api_key: str, timeout: float = 30.0):
+    def __init__(self, api_base: str, api_key: str, timeout: float = 30.0, upload_base: str = DEFAULT_UPLOAD_BASE):
         self.api_base = api_base.rstrip("/")
+        self.upload_base = upload_base.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
 
-    def _call(self, method: str, path: str, query=None, body=None):
-        url = self.api_base + path
+    def _call(self, method: str, path: str, query=None, body=None, base=None, raw_body=None, content_type=None):
+        url = (base or self.api_base) + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
-        data = json.dumps(body).encode("utf-8") if body is not None else None
+        data = raw_body if raw_body is not None else (json.dumps(body).encode("utf-8") if body is not None else None)
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Authorization", "Bearer " + self.api_key)
         req.add_header("Accept", "application/json")
         req.add_header("User-Agent", USER_AGENT)
         if data is not None:
-            req.add_header("Content-Type", "application/json")
+            req.add_header("Content-Type", content_type or "application/json")
         status = 0
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -210,6 +228,29 @@ class KieClient:
         if not task_id:
             raise UpstreamError("Kie.ai accepted the request but returned no taskId")
         return str(task_id)
+
+    def upload_file(self, path: str, file_name: str, upload_path: str = "context-bridge") -> str:
+        """File Stream Upload (docs.kie.ai/file-upload-api/upload-file-stream): multipart POST with
+        `file`, `uploadPath`, `fileName`; returns data.downloadUrl. Kie.ai deletes it after 24 h."""
+        boundary = "----ContextBridge" + uuid.uuid4().hex
+        with open(path, "rb") as f:
+            payload = f.read()
+        parts = []
+        for name, value in (("uploadPath", upload_path), ("fileName", file_name)):
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_name}"\r\n'
+                     f'Content-Type: audio/wav\r\n\r\n'.encode() + payload + b"\r\n")
+        parts.append(f"--{boundary}--\r\n".encode())
+        old_timeout, self.timeout = self.timeout, max(self.timeout, 120.0)
+        try:
+            data = self._call("POST", "/api/file-stream-upload", base=self.upload_base, raw_body=b"".join(parts),
+                              content_type="multipart/form-data; boundary=" + boundary)
+        finally:
+            self.timeout = old_timeout
+        url = data.get("downloadUrl") if isinstance(data, dict) else None
+        if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+            raise UpstreamError("Kie.ai accepted the upload but returned no download link")
+        return url
 
     def record_info(self, task_id: str) -> dict:
         data = self._call("GET", "/api/v1/jobs/recordInfo", query={"taskId": task_id})
@@ -299,6 +340,89 @@ def find_wav_url(obj, depth=0):
     walk(obj, "", depth)
     found.sort(key=lambda t: -t[0])
     return found[0][1] if found else None
+
+
+STEM_ALIASES = {
+    "vocal": "vocal", "vocals": "vocal", "lead vocal": "vocal", "instrumental": "instrumental",
+    "backing vocals": "backing_vocals", "backing_vocals": "backing_vocals", "drums": "drums", "drum": "drums",
+    "bass": "bass", "guitar": "guitar", "keyboard": "keyboard", "keys": "keyboard", "percussion": "percussion",
+    "strings": "strings", "synth": "synth", "fx": "fx", "other": "fx", "brass": "brass", "woodwinds": "woodwinds",
+}
+
+
+def _stem_name(raw: str):
+    raw = raw.strip().lower().replace("-", " ").replace("_", " ")
+    return STEM_ALIASES.get(raw) or STEM_ALIASES.get(raw.replace(" ", "_"))
+
+
+def extract_stems(info) -> dict:
+    """{stem: url} from a separate-vocals result. The docs give the polling result as
+    resultJson.resultUrls with file names ending in the stem ("..._Vocals.mp3") and the callback as
+    vocal_removal_info.{vocal_url, drums_url, ...}; both are accepted."""
+    stems = {}
+
+    def walk(o, key, d):
+        if d > 8:
+            return
+        o = _maybe_json(o)
+        if isinstance(o, dict):
+            for k, v in o.items():
+                walk(v, str(k), d + 1)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v, key, d + 1)
+        elif isinstance(o, str) and o.startswith(("https://", "http://")):
+            name = None
+            k = key.lower()
+            if k.endswith("_url") and k not in ("origin_url", "audio_url", "stream_audio_url", "image_url"):
+                name = _stem_name(k[:-4])
+            if name is None:
+                base = urllib.parse.unquote(urllib.parse.urlsplit(o).path.rsplit("/", 1)[-1])
+                m = re.search(r"[_\- ]([A-Za-z][A-Za-z _]*?)\.(mp3|wav|flac|m4a|ogg)$", base)
+                if m:
+                    name = _stem_name(m.group(1))
+            if name and name not in stems:
+                stems[name] = o
+
+    walk(info, "", 0)
+    return stems
+
+
+# Which separated stem answers a prompt. Order matters: the first keyword found wins.
+STEM_KEYWORDS = [
+    ("vocal", ["vocal", "vox", "voice", "singer", "sing", "rap", "choir", "acapella", "adlib", "ad-lib", "chant"]),
+    ("drums", ["drum", "kick", "snare", "hat", "hihat", "hi-hat", "clap", "breakbeat"]),
+    ("bass", ["808", "bass", "sub"]),
+    ("guitar", ["guitar", "riff", "strum"]),
+    ("keyboard", ["piano", "keys", "rhodes", "organ", "keyboard", "e-piano", "epiano", "bell", "celesta"]),
+    ("strings", ["string", "violin", "cello", "viola", "orchestra", "pizzicato", "harp"]),
+    ("brass", ["brass", "horn", "trumpet", "trombone", "tuba"]),
+    ("woodwinds", ["flute", "sax", "clarinet", "oboe", "woodwind", "bassoon", "pan flute"]),
+    ("synth", ["synth", "pad", "lead", "pluck", "arp", "saw", "chord"]),
+    ("percussion", ["percussion", "shaker", "conga", "bongo", "tambourine", "perc"]),
+    ("fx", ["fx", "riser", "impact", "sweep", "whoosh", "noise", "texture"]),
+]
+TYPE_DEFAULT_STEM = {"percussion": "drums", "fx": "fx", "texture": "synth", "vocal": "vocal"}
+
+
+def wanted_stem(prompt: str, ctype: str):
+    text = " " + (prompt or "").lower() + " "
+    best = None
+    for stem, words in STEM_KEYWORDS:
+        for w in words:
+            i = text.find(w)
+            if i >= 0 and (best is None or i < best[0]):
+                best = (i, stem)
+    return best[1] if best else TYPE_DEFAULT_STEM.get(ctype)
+
+
+def vocal_gender(prompt: str):
+    t = (prompt or "").lower()
+    if re.search(r"\b(female|woman|women|girl|feminine|she)\b", t):
+        return "f"
+    if re.search(r"\b(male|man|men|guy|boy|masculine|he)\b", t):
+        return "m"
+    return None
 
 
 STATE_MAP = {
@@ -401,6 +525,135 @@ def decode_to_wav(src: str, dest: str) -> None:
         w.writeframes(pcm.tobytes())
 
 
+def wav_info(path: str):
+    """(seconds, rate, channels) of a PCM WAV, or None."""
+    import wave
+    try:
+        with wave.open(path, "rb") as w:
+            rate, ch, n = w.getframerate(), w.getnchannels(), w.getnframes()
+            return (n / float(rate) if rate else 0.0), rate, ch
+    except Exception:
+        return None
+
+
+def read_mono16(path: str):
+    """(rate, array('h') mono) of a WAV or MP3, or None if it can't be read."""
+    import array
+    import wave
+    try:
+        with wave.open(path, "rb") as w:
+            if w.getsampwidth() == 2:
+                rate, ch = w.getframerate(), w.getnchannels()
+                a = array.array("h")
+                a.frombytes(w.readframes(w.getnframes()))
+                if sys.byteorder != "little":
+                    a.byteswap()
+                return rate, (a if ch == 1 else array.array("h", a[0::ch]))
+    except Exception:
+        pass
+    if miniaudio is None:
+        return None
+    try:
+        snd = miniaudio.decode_file(path, output_format=miniaudio.SampleFormat.SIGNED16, nchannels=1)
+        return snd.sample_rate, snd.samples
+    except Exception:
+        return None
+
+
+def envelope(rate: int, mono, hop_seconds=0.02, limit_seconds=None):
+    hop = max(1, int(rate * hop_seconds))
+    n = len(mono) if limit_seconds is None else min(len(mono), int(limit_seconds * rate))
+    env = []
+    for start in range(0, n - hop + 1, hop):
+        acc = 0
+        for i in range(start, start + hop, 4):        # every 4th sample is plenty for an envelope
+            v = mono[i]
+            acc += v * v
+        env.append(math.sqrt(acc / (hop / 4.0)))
+    return env
+
+
+def correlation(a, b) -> float:
+    n = min(len(a), len(b))
+    if n < 10:
+        return 0.0
+    a, b = a[:n], b[:n]
+    ma, mb = sum(a) / n, sum(b) / n
+    num = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    da = math.sqrt(sum((x - ma) ** 2 for x in a))
+    db = math.sqrt(sum((y - mb) ** 2 for y in b))
+    return num / (da * db) if da > 0 and db > 0 else 0.0
+
+
+def find_echo_of_context(result_path: str, context_path: str, context_seconds: float):
+    """If the extended result starts with the uploaded context (Kie.ai may return the whole song
+    or only the continuation; the docs don't say), returns the seconds to cut so only the new part
+    remains. Returns 0 when the result doesn't start with the context."""
+    ctx = read_mono16(context_path)
+    res = read_mono16(result_path)
+    if not ctx or not res:
+        return 0.0
+    ce = envelope(ctx[0], ctx[1])
+    re_ = envelope(res[0], res[1], limit_seconds=context_seconds + 1.0)
+    best, best_lag = 0.0, 0
+    for lag in range(0, min(25, max(0, len(re_) - 10))):      # up to 0.5 s offset
+        c = correlation(ce, re_[lag:])
+        if c > best:
+            best, best_lag = c, lag
+    if best >= 0.7 and len(res[1]) / float(res[0]) > context_seconds + 2.0:
+        return context_seconds + best_lag * 0.02
+    return 0.0
+
+
+def cut_wav_start(path: str, seconds: float) -> bool:
+    """Drops the first `seconds` of a 16-bit WAV in place (with a 5 ms fade-in)."""
+    import array
+    import wave
+    try:
+        with wave.open(path, "rb") as w:
+            rate, ch, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+            if width != 2:
+                return False
+            w.setpos(min(w.getnframes(), int(seconds * rate)))
+            data = array.array("h")
+            data.frombytes(w.readframes(w.getnframes()))
+        fade = min(len(data) // ch, int(0.005 * rate))
+        for f in range(fade):
+            g = (f + 1) / float(fade)
+            for c in range(ch):
+                data[f * ch + c] = int(data[f * ch + c] * g)
+        tmp = path + ".cut"
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(ch)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(data.tobytes())
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def to_pcm16(path: str) -> bool:
+    """Makes sure `path` is a 16-bit WAV (re-decoding 24/32-bit WAVs with miniaudio)."""
+    import wave
+    try:
+        with wave.open(path, "rb") as w:
+            if w.getsampwidth() == 2:
+                return True
+    except Exception:
+        pass
+    if miniaudio is None:
+        return False
+    try:
+        tmp = path + ".16"
+        decode_to_wav(path, tmp)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 # ============================================================================ request mapping
 
 def kie_key(key, mode):
@@ -462,6 +715,100 @@ def build_task(req: dict, cfg: Config):
     extras = [f"{task_input['sound_tempo']} BPM" if "sound_tempo" in task_input else "",
               task_input.get("sound_key", ""), "loop" if task_input.get("sound_loop") else ""]
     return "ai-music-api/sounds", task_input, "Suno Sounds (" + ", ".join([model] + [e for e in extras if e]) + ")"
+
+
+class ContextAudio:
+    """The track context Context sent with the request (a WAV file on disk)."""
+
+    def __init__(self, path: str, seconds: float, mode: str, bars=None):
+        self.path, self.seconds, self.mode, self.bars = path, seconds, mode, bars
+
+
+def parse_audio_context(req: dict, work_dir: str, job_id: str):
+    """Decodes request.audioContext into a WAV file. Returns ContextAudio, None (not sent) or
+    raises UpstreamError with a user-facing message."""
+    ac = req.get("audioContext")
+    if not isinstance(ac, dict) or not ac.get("data"):
+        return None
+    if str(ac.get("format", "wav")).lower() != "wav" or str(ac.get("encoding", "base64")).lower() != "base64":
+        raise UpstreamError("Unsupported audio context format (expected base64 WAV)")
+    data = ac.get("data")
+    if not isinstance(data, str) or len(data) > MAX_CONTEXT_BYTES * 4 // 3 + 16:
+        raise UpstreamError("The track context is too large to upload")
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except Exception:
+        raise UpstreamError("The track context isn't valid base64") from None
+    path = os.path.join(work_dir, job_id + "-context.wav")
+    with open(path, "wb") as f:
+        f.write(raw)
+    info = wav_info(path) if repair_wav(path) else None
+    problem = None
+    if not info or info[0] < 0.5:
+        problem = "The track context isn't a usable WAV file"
+    elif info[0] > MAX_CONTEXT_SECONDS:
+        problem = f"The track context is longer than {int(MAX_CONTEXT_SECONDS)} seconds"
+    if problem:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise UpstreamError(problem)
+    mode = str(req.get("contextMode") or "layer").lower()
+    if mode not in CONTEXT_MODES:
+        mode = "layer"
+    bars = ac.get("bars") if isinstance(ac.get("bars"), (int, float)) else None
+    return ContextAudio(path, info[0], mode, bars)
+
+
+def context_plan(req: dict, cfg: Config, ctx: ContextAudio):
+    """The Kie.ai steps for a request with track context: (first_model, first_input, stem, label).
+    `stem` is the stem to separate out afterwards (None = keep the whole result)."""
+    user_prompt = str(req.get("userPrompt") or "")
+    prompt = str(req.get("prompt") or user_prompt)
+    prompt = re.sub(r"#(song|sound)\b", "", prompt, flags=re.IGNORECASE).strip()
+    user_prompt = re.sub(r"#(song|sound)\b", "", user_prompt, flags=re.IGNORECASE).strip() or prompt
+    ctype = str(req.get("type") or "one_shot")
+    model = str(cfg.get("music_model", "V6"))
+    if model not in ("V6", "V6_MINI", "V6_WILD"):
+        model = "V6"
+    title = shorten(user_prompt, 80) or "Context"
+    style = shorten(prompt, 1000)
+    negative = shorten(str(cfg.get("negative_tags", "low quality, muffled, clipping")), 200)
+    audio_weight = cfg.get("context_audio_weight", 0.8)
+    try:
+        audio_weight = round(min(1.0, max(0.0, float(audio_weight))), 2)
+    except (TypeError, ValueError):
+        audio_weight = 0.8
+    gender = vocal_gender(user_prompt)
+    duration = int(round(min(360.0, max(10.0, ctx.seconds))))
+
+    if ctx.mode == "layer" and ctype == "vocal":
+        inp = {"upload_url": "", "title": title, "negative_tags": negative, "style": style,
+               "model": model, "audio_weight": audio_weight}
+        if gender:
+            inp["vocal_gender"] = gender
+        return "ai-music-api/add-vocals", inp, "vocal", "Add vocals to your track -> vocal stem"
+
+    if ctx.mode == "extend":
+        instrumental = ctype != "vocal"
+        inp = {"upload_url": "", "model": model, "continue_at": round(max(0.1, ctx.seconds - 0.05), 2),
+               "instrumental": instrumental, "style": style, "title": shorten(title, 100),
+               "negative_tags": negative, "audio_weight": audio_weight}
+        if not instrumental and gender:
+            inp["vocal_gender"] = gender
+        return "ai-music-api/upload-and-extend-audio", inp, None, "Continue your track"
+
+    instrumental = ctype != "vocal"
+    inp = {"upload_url": "", "instrumental": instrumental, "model": model, "style": style, "title": title,
+           "negative_tags": negative, "audio_weight": audio_weight, "duration": duration}
+    if not instrumental and gender:
+        inp["vocal_gender"] = gender
+    if ctx.mode == "cover":
+        return "ai-music-api/upload-and-cover-audio", inp, None, "Restyle your track"
+    stem = wanted_stem(user_prompt, ctype)
+    label = "Re-imagine your track -> " + (stem + " stem" if stem else "full result (no instrument named)")
+    return "ai-music-api/upload-and-cover-audio", inp, stem, label
 
 
 # Context maps errorCodes containing auth/rate/quota/invalid/... to its own generic messages and
@@ -572,13 +919,25 @@ class Bridge:
 
     # -- job lifecycle
     def submit(self, req: dict) -> Job:
-        model, task_input, label = build_task(req, self.cfg)
-        job = Job(uuid.uuid4().hex, 150.0 if model.endswith("/generate") else 45.0)
+        """Starts a job. Raises UpstreamError for a request that can't be run (bad audio context)."""
+        job_id = uuid.uuid4().hex
+        ctx = parse_audio_context(req, self.audio_dir, job_id)
+        shown = shorten(str(req.get("userPrompt") or req.get("prompt") or ""), 60)
+        if ctx is not None:
+            model, task_input, stem, label = context_plan(req, self.cfg, ctx)
+            job = Job(job_id, 200.0 if stem else 150.0)
+            log(f"New request {job.id[:8]}: \"{shown}\" with {ctx.seconds:.1f} s of track context -> {label}")
+            pipeline = lambda tmp: self._pipeline_context(job, model, task_input, stem, ctx, tmp)
+            extra = [ctx.path]
+        else:
+            model, task_input, label = build_task(req, self.cfg)
+            job = Job(job_id, 150.0 if model.endswith("/generate") else 45.0)
+            log(f"New request {job.id[:8]}: \"{shown}\" -> {label}")
+            pipeline = lambda tmp: self._pipeline_plain(job, model, task_input, tmp)
+            extra = []
         with self.lock:
             self.jobs[job.id] = job
-        shown = shorten(str(req.get("userPrompt") or task_input.get("prompt", "")), 60)
-        log(f"New request {job.id[:8]}: \"{shown}\" -> {label}")
-        threading.Thread(target=self._run, args=(job, model, task_input), daemon=True).start()
+        threading.Thread(target=self._run, args=(job, pipeline, extra), daemon=True).start()
         return job
 
     def _check(self, job: Job):
@@ -629,6 +988,20 @@ class Bridge:
             self._sleep(job, interval)
             interval = min(self.poll_max, interval * 1.3)
 
+    def _create(self, job: Job, model: str, task_input: dict) -> str:
+        attempt = 0
+        while True:
+            try:
+                return self.client.create_task(model, task_input)
+            except UpstreamError as e:
+                # Only retry when Kie.ai clearly did not accept the task (rate limit), so a
+                # retry can't create a second, paid generation.
+                if e.code == 429 and attempt < 3:
+                    attempt += 1
+                    self._sleep(job, 5.0 * attempt)
+                    continue
+                raise
+
     def _convert_to_wav(self, job: Job, task_id: str, clip_id: str, deadline: float):
         try:
             wav_task = self.client.create_task("ai-music-api/convert-to-wav-format",
@@ -645,65 +1018,98 @@ class Bridge:
             raise UpstreamError("WAV conversion finished without a link")
         return url
 
-    def _run(self, job: Job, model: str, task_input: dict):
-        tmp_paths = []
-        try:
-            deadline = time.time() + self.timeout_seconds
-            attempt = 0
-            while True:
-                try:
-                    task_id = self.client.create_task(model, task_input)
-                    break
-                except UpstreamError as e:
-                    # Only retry when Kie.ai clearly did not accept the task (rate limit), so a
-                    # retry can't create a second, paid generation.
-                    if e.code == 429 and attempt < 3:
-                        attempt += 1
-                        self._sleep(job, 5.0 * attempt)
-                        continue
-                    raise
-            job.set(status="generating", progress=0.05)
-            info = self._wait_for_task(job, task_id, deadline, "generation")
-            clips = extract_clips(info)
-            if not clips:
-                raise UpstreamError("Kie.ai finished but returned no audio")
-            clip = clips[0]
-            job.set(progress=0.92)
+    def _fetch_audio(self, job: Job, url: str, final: str, tmp_paths: list) -> None:
+        """Downloads `url` (WAV or MP3) and leaves a usable WAV at `final`."""
+        self._check(job)
+        src = final + ".src"
+        tmp_paths.append(src)
+        download(url, src, self.allow_http_loopback)
+        with open(src, "rb") as f:
+            magic = f.read(12)
+        if magic[:4] == b"RIFF" and magic[8:12] == b"WAVE" and repair_wav(src):
+            os.replace(src, final)
+        else:
+            part = final + ".part"
+            tmp_paths.append(part)
+            decode_to_wav(src, part)
+            os.replace(part, final)
 
-            final = os.path.join(self.audio_dir, job.id + ".wav")
-            got_wav = False
-            if self.cfg.get("convert_to_wav", True) and clip["id"]:
-                try:
-                    wav_url = self._convert_to_wav(job, task_id, clip["id"], deadline)
-                    self._check(job)
-                    part = final + ".part"
-                    tmp_paths.append(part)
-                    download(wav_url, part, self.allow_http_loopback)
-                    if repair_wav(part):
-                        os.replace(part, final)
-                        got_wav = True
-                    else:
-                        log(f"  {job.id[:8]}: WAV from Kie.ai wasn't usable, decoding the MP3 instead")
-                except Cancelled:
-                    raise
-                except UpstreamError as e:
-                    log(f"  {job.id[:8]}: WAV conversion unavailable ({e}); using the MP3 instead")
-
-            if not got_wav:
+    def _deliver_clip(self, job: Job, task_id: str, clip: dict, deadline: float, final: str, tmp_paths: list):
+        """Best-quality WAV of a generated Suno clip: Kie.ai's WAV conversion, else the decoded MP3."""
+        if self.cfg.get("convert_to_wav", True) and clip["id"]:
+            try:
+                wav_url = self._convert_to_wav(job, task_id, clip["id"], deadline)
                 self._check(job)
-                src = os.path.join(self.audio_dir, job.id + ".src")
-                tmp_paths.append(src)
-                download(clip["url"], src, self.allow_http_loopback)
-                with open(src, "rb") as f:
-                    magic = f.read(12)
-                if magic[:4] == b"RIFF" and magic[8:12] == b"WAVE" and repair_wav(src):
-                    os.replace(src, final)
-                else:
-                    part = final + ".part"
-                    tmp_paths.append(part)
-                    decode_to_wav(src, part)
+                part = final + ".part"
+                tmp_paths.append(part)
+                download(wav_url, part, self.allow_http_loopback)
+                if repair_wav(part):
                     os.replace(part, final)
+                    return
+                log(f"  {job.id[:8]}: WAV from Kie.ai wasn't usable, decoding the MP3 instead")
+            except Cancelled:
+                raise
+            except UpstreamError as e:
+                log(f"  {job.id[:8]}: WAV conversion unavailable ({e}); using the MP3 instead")
+        self._fetch_audio(job, clip["url"], final, tmp_paths)
 
+    def _generate(self, job: Job, model: str, task_input: dict, deadline: float, what: str):
+        task_id = self._create(job, model, task_input)
+        job.set(status="generating", progress=max(job.progress, 0.05))
+        info = self._wait_for_task(job, task_id, deadline, what)
+        clips = extract_clips(info)
+        if not clips:
+            raise UpstreamError("Kie.ai finished but returned no audio")
+        return task_id, clips[0]
+
+    # -- pipelines (each returns the path of the finished WAV)
+    def _pipeline_plain(self, job: Job, model: str, task_input: dict, tmp_paths: list) -> str:
+        deadline = time.time() + self.timeout_seconds
+        task_id, clip = self._generate(job, model, task_input, deadline, "generation")
+        job.set(progress=0.92)
+        final = os.path.join(self.audio_dir, job.id + ".wav")
+        self._deliver_clip(job, task_id, clip, deadline, final, tmp_paths)
+        return final
+
+    def _pipeline_context(self, job: Job, model: str, task_input: dict, stem, ctx: ContextAudio,
+                          tmp_paths: list) -> str:
+        deadline = time.time() + self.timeout_seconds + (240.0 if stem else 0.0)
+        job.set(status="generating", progress=0.02)
+        log(f"  {job.id[:8]}: uploading {ctx.seconds:.1f} s of track context to Kie.ai file storage")
+        upload_url = self.client.upload_file(ctx.path, job.id + ".wav")
+        self._check(job)
+        task_input = dict(task_input, upload_url=upload_url)
+        job.set(expected=150.0)
+        task_id, clip = self._generate(job, model, task_input, deadline, model.rsplit("/", 1)[-1])
+        final = os.path.join(self.audio_dir, job.id + ".wav")
+
+        if stem:
+            job.set(progress=0.6, started=time.time(), expected=90.0)
+            kind = "separate_vocal" if stem in ("vocal", "instrumental") else "split_stem"
+            sep_task = self._create(job, "ai-music-api/separate-vocals",
+                                    {"task_id": task_id, "audio_id": clip["id"], "type": kind})
+            info = self._wait_for_task(job, sep_task, deadline, "stem separation")
+            stems = extract_stems({"r": info.get("resultJson"), "s": info.get("response"), "d": info})
+            if stem in stems:
+                log(f"  {job.id[:8]}: keeping the {stem} stem (of {', '.join(sorted(stems))})")
+                job.set(progress=0.93)
+                self._fetch_audio(job, stems[stem], final, tmp_paths)
+                return final
+            log(f"  {job.id[:8]}: no {stem} stem in the separation result ({', '.join(sorted(stems)) or 'none'}); "
+                f"returning the full result")
+
+        job.set(progress=0.92)
+        self._deliver_clip(job, task_id, clip, deadline, final, tmp_paths)
+        if ctx.mode == "extend":
+            cut = find_echo_of_context(final, ctx.path, ctx.seconds)
+            if cut > 0 and to_pcm16(final) and cut_wav_start(final, cut):
+                log(f"  {job.id[:8]}: the result repeats your track first; cut {cut:.2f} s so only the new part remains")
+        return final
+
+    def _run(self, job: Job, pipeline, extra_tmp: list):
+        tmp_paths = list(extra_tmp)
+        try:
+            final = pipeline(tmp_paths)
             self._check(job)
             job.set(status="complete", progress=1.0, file=final)
             log(f"  {job.id[:8]}: ready ({os.path.getsize(final) // 1024} KB WAV)")
@@ -787,7 +1193,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/context/v1/health":
             return self.send_json(200, {"protocol": PROTOCOL, "name": "Kie.ai Suno Bridge", "version": VERSION})
         if path == "/context/v1/capabilities":
-            return self.send_json(200, {"generationTypes": TYPES, "features": ["cancellation"],
+            return self.send_json(200, {"generationTypes": TYPES,
+                                        "features": ["cancellation", "audio_conditioning", "cover", "continuation"],
+                                        "contextModes": CONTEXT_MODES,
+                                        "maxAudioContextSeconds": int(MAX_CONTEXT_SECONDS),
                                         "maxDurationSeconds": 360})
         if path == "/context/v1/generate":
             return self.send_json(405, {"error": "use POST"})
@@ -824,7 +1233,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.bridge.active_jobs() >= MAX_CONCURRENT_JOBS:
             return self.send_json(429, {"error": "the bridge is already running several generations",
                                         "errorCode": "busy"})
-        job = self.bridge.submit(body)
+        try:
+            job = self.bridge.submit(body)
+        except UpstreamError as e:
+            return self.send_json(400, {"error": str(e), "errorCode": "audio_context_rejected"})
         return self.send_json(202, {"jobId": job.id})
 
     def send_file(self, job_id):
@@ -898,6 +1310,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="check the key, show credits, exit")
     ap.add_argument("--config-dir", default=default_config_dir(), help=argparse.SUPPRESS)
     ap.add_argument("--api-base", default=DEFAULT_API_BASE, help=argparse.SUPPRESS)  # tests only
+    ap.add_argument("--upload-base", default=None, help=argparse.SUPPRESS)              # tests only
     ap.add_argument("--fast-poll", action="store_true", help=argparse.SUPPRESS)       # tests only
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
@@ -908,6 +1321,12 @@ def main():
         print("--api-base must be https", file=sys.stderr)
         return 2
 
+    upload_base = args.upload_base or (args.api_base if test_upstream else DEFAULT_UPLOAD_BASE)
+    up = urllib.parse.urlsplit(upload_base)
+    if up.scheme != "https" and not (test_upstream and up.hostname in ("127.0.0.1", "localhost")):
+        print("--upload-base must be https", file=sys.stderr)
+        return 2
+
     cfg = Config(args.config_dir)
     if args.set_key or not cfg.api_key:
         if not ask_for_key(cfg):
@@ -915,12 +1334,12 @@ def main():
                   "or set the KIE_API_KEY environment variable.", file=sys.stderr)
             return 2
 
-    client = KieClient(args.api_base, cfg.api_key)
+    client = KieClient(args.api_base, cfg.api_key, upload_base=upload_base)
     status = check_key(client)
     while status == "invalid" and not os.environ.get("KIE_API_KEY"):
         if not ask_for_key(cfg):
             return 2
-        client = KieClient(args.api_base, cfg.api_key)
+        client = KieClient(args.api_base, cfg.api_key, upload_base=upload_base)
         status = check_key(client)
     if args.check:
         return 0 if status == "ok" else 1

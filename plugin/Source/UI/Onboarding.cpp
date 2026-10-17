@@ -9,7 +9,7 @@ Onboarding::Onboarding (ContextAudioProcessor& p) : processor (p)
 {
     for (auto* e : { &key, &address })
     {
-        e->setFont (ContextLookAndFeel::font (16.0f));
+        e->setFont (ui::font (16.0f));
         e->setIndents (10, 8);
         addAndMakeVisible (*e);
     }
@@ -52,7 +52,7 @@ Onboarding::Onboarding (ContextAudioProcessor& p) : processor (p)
     };
     done.onClick = [this] { finish(); };
 
-    message.setFont (ContextLookAndFeel::font (14.0f));
+    message.setFont (ui::font (type::body + 1.0f));
     message.setJustificationType (juce::Justification::topLeft);
     message.setMinimumHorizontalScale (1.0f);
     addAndMakeVisible (message);
@@ -123,25 +123,42 @@ void Onboarding::refresh()
 
 void Onboarding::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xe60e0f12));
-    paintCard (g, card.toFloat(), colours::panel);
+    // Same panel as every other sheet in Context.
+    g.fillAll (colours::background.withAlpha (0.94f));
+    const auto panel = card.toFloat();
+    for (int i = 0; i < 6; ++i)
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.05f));
+        g.fillRoundedRectangle (panel.expanded ((float) i * 2.0f).translated (0.0f, 4.0f), radius::panel + (float) i * 2.0f);
+    }
+    g.setColour (colours::panel);
+    g.fillRoundedRectangle (panel, radius::panel + 1.0f);
+    g.setColour (colours::border);
+    g.drawRoundedRectangle (panel.reduced (0.5f), radius::panel + 1.0f, 1.0f);
 
     const int s = step();
     auto r = card.reduced (28, 22);
-    g.setColour (colours::dim);
-    g.setFont (ContextLookAndFeel::font (12.0f, true).withExtraKerningFactor (0.12f));
-    g.drawText ("STEP " + juce::String (s) + " OF 2", r.removeFromTop (18), juce::Justification::centredLeft);
+    // Step dots: the setup really is a sequence of two.
+    auto dots = r.removeFromTop (18);
+    for (int i = 1; i <= 2; ++i)
+    {
+        g.setColour (i <= s ? colours::accent : colours::border);
+        g.fillRoundedRectangle (juce::Rectangle<float> ((float) dots.getX() + (float) (i - 1) * 22.0f, (float) dots.getCentreY() - 1.5f, 16.0f, 3.0f), 1.5f);
+    }
+    g.setColour (colours::faint);
+    g.setFont (ui::font (type::label, Weight::Medium));
+    g.drawText ("Step " + juce::String (s) + " of 2", dots.withTrimmedLeft (52), juce::Justification::centredLeft);
     g.setColour (colours::text);
-    g.setFont (ContextLookAndFeel::font (24.0f, true));
-    g.drawText (s == 1 ? "Activate Context" : "Connect Local Generation Bridge", r.removeFromTop (36), juce::Justification::centredLeft);
+    g.setFont (ui::font (24.0f, Weight::SemiBold));
+    g.drawText (s == 1 ? "Activate Context" : "Connect your generation bridge", r.removeFromTop (36), juce::Justification::centredLeft);
     g.setColour (colours::dim);
-    g.setFont (ContextLookAndFeel::font (14.0f));
+    g.setFont (ui::font (type::body + 1.0f));
     g.drawFittedText (s == 1 ? "Enter the license key from your purchase email."
                              : "Context sends prompts to a generation bridge running on this computer.",
                       r.removeFromTop (22), juce::Justification::centredLeft, 2);
     g.setColour (colours::dim);
-    g.setFont (ContextLookAndFeel::font (12.5f, true));
-    g.drawText (s == 1 ? "LICENSE KEY" : "ADDRESS", r.withHeight (18).translated (0, 14), juce::Justification::centredLeft);
+    g.setFont (labelFont());
+    g.drawText (s == 1 ? "License key" : "Bridge address", r.withHeight (18).translated (0, 14), juce::Justification::centredLeft);
 }
 
 void Onboarding::resized()

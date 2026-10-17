@@ -37,6 +37,7 @@ SessionController::SessionController (Dependencies d) : deps (std::move (d))
         w->onTaskException = [] (const juce::String& what) { logging::error ("session", "Worker task threw: " + what); };
     lastRate = renderRate();
     applyEngineSettings();
+    committed = currentSnapshot();
     startTimerHz (timerHz);
 }
 
@@ -82,8 +83,10 @@ SessionState SessionController::getState() const
     return state;
 }
 
-void SessionController::restore (const SessionState& s, const juce::var& chainState)
+void SessionController::restore (const SessionState& restored, const juce::var& chainState)
 {
+    auto s = restored;
+    s.migrateLegacySource();
     {
         const juce::ScopedLock sl (stateLock);
         state = s;
@@ -98,40 +101,33 @@ void SessionController::restore (const SessionState& s, const juce::var& chainSt
     contextPlayback.reset();
     contextPeaks.reset();
     contextMissing = false;
+    publishUploadContext();
     if (s.context)
         loadContextFromCache (*s.context);
 
-    // Output source.
+    // Takes: (re)load every take; the base take is what the lane shows.
+    ++loadSerial;
+    takeData.clear();
     source.reset();
+    material.reset();
     fitted.reset();
     fittedPeaks.reset();
     hasReport = false;
-    outputMissing = false;
+    outputLoading = outputMissing = false;
     outputMessage = {};
-    if (s.sourceKind == SessionState::SourceKind::Generated)
-    {
-        if (auto r = deps.findGenerated ? deps.findGenerated (s.generatedId) : std::nullopt; r && r->localFile.existsAsFile())
-            loadGenerated (*r);
-        else
-        {
-            outputMissing = true;
-            outputMessage = "The generated sound used in this project is no longer in Context's library.";
-        }
-    }
-    else if (s.sourceKind == SessionState::SourceKind::Imported)
-    {
-        const juce::File f (s.importedPath);
-        if (f.existsAsFile())
-            importFile (f);
-        else
-        {
-            outputMissing = true;
-            outputMessage = "Sample not found: " + f.getFileName();
-        }
-    }
+    pendingFill.reset();
+    syncTakesRuntime();
+    refreshBaseSource();
     publishProgram();
+
+    // A loaded project starts a fresh undo history.
+    undoStack.clear();
+    redoStack.clear();
+    committed = currentSnapshot();
+    quietTicks = 0;
     sendChangeMessage();
 }
+
 
 void SessionController::applyEngineSettings()
 {
@@ -322,6 +318,7 @@ void SessionController::applyContext (AudioAsset::Ptr asset, std::shared_ptr<con
     contextMissing = false;
     contextMessage = {};
     mutate ([&meta] (SessionState& s) { s.context = meta; });
+    publishUploadContext();
     if (a)
         deps.analysis->setExternalResult (*a);
     deps.engine->setTempo (meta.tempo.bpm);
@@ -412,6 +409,22 @@ SessionController::LaneInfo SessionController::contextLane() const
 }
 
 std::optional<TrackAnalysis> SessionController::contextAnalysis() const { return ctxAnalysis; }
+
+SessionController::UploadContext SessionController::contextForUpload() const
+{
+    const juce::SpinLock::ScopedLockType sl (uploadLock);
+    return uploadContext;
+}
+
+void SessionController::publishUploadContext()
+{
+    UploadContext u;
+    u.asset = contextAsset;
+    if (const auto s = getState(); s.context)
+        u.bars = s.context->bars;
+    const juce::SpinLock::ScopedLockType sl (uploadLock);
+    uploadContext = std::move (u);
+}
 bool SessionController::hasContext() const { return contextAsset != nullptr; }
 
 void SessionController::clearContext()
@@ -424,6 +437,7 @@ void SessionController::clearContext()
     contextMissing = false;
     contextMessage = {};
     mutate ([] (SessionState& s) { s.context.reset(); });
+    publishUploadContext();
     deps.engine->setTempo (sessionTempo().bpm);
     publishProgram();
     requestRender();
@@ -496,49 +510,32 @@ void SessionController::retargetContextToHostTempo()
 
 void SessionController::loadGenerated (const GenerationResult& r)
 {
-    mutate ([&r] (SessionState& s)
+    pendingFill.reset();
+    const auto id = addTake (edit::Take::Kind::Generated, r.generationId, r.prompt);
+    setBaseTake (id, true);
+}
+
+void SessionController::generationArrived (const GenerationResult& r)
+{
+    if (! pendingFill)
     {
-        s.sourceKind = SessionState::SourceKind::Generated;
-        s.generatedId = r.generationId;
-        s.importedPath = {};
-        s.restoreGeneratedId = {};
-    });
-    outputLoading = true;
-    outputMissing = false;
-    outputMessage = {};
-    const auto serial = ++loadSerial;
-    const auto result = r;
-    loader.post ([this, result, serial]
+        loadGenerated (r);
+        return;
+    }
+    const auto range = *pendingFill;
+    pendingFill.reset();
+    const auto id = addTake (edit::Take::Kind::Generated, r.generationId, r.prompt);
+    editWith ([&] (const edit::Edit& e, const juce::String& base, double total)
     {
-        auto loaded = assets::loadFile (result.localFile, AudioAsset::Origin::Generated);
-        if (! loaded.ok())
-        {
-            const auto err = loaded.error;
-            onMessageThread ([this, err, serial]
-            {
-                if (serial != loadSerial) return;
-                outputLoading = false;
-                outputMissing = true;
-                outputMessage = err;
-                notify ("Couldn't load the generated sound: " + err, true);
-            });
-            return;
-        }
-        auto asset = std::make_shared<AudioAsset> (*loaded.asset);
-        asset->generationId = result.generationId;
-        asset->displayName = result.prompt.isNotEmpty() ? result.prompt : result.localFile.getFileNameWithoutExtension();
-        asset->bpm = result.bpm;
-        asset->key = result.key;
-        asset->mode = result.mode;
-        auto analysisResult = stretch::analyseMaterial (asset->audio, asset->sampleRate);
-        AudioAsset::Ptr constAsset = asset;
-        onMessageThread ([this, constAsset, analysisResult, serial]
-        {
-            if (serial != loadSerial) return;
-            setOutputSource (constAsset, analysisResult);
-        });
+        return edit::fillFromTake (e, base, total, range.first, range.second, id);
     });
-    sendChangeMessage();
+    const auto bpb = musical::quarterNotesPerBar (sessionTempo().signature);
+    const int firstBar = (int) std::floor (range.first / bpb + 1.0e-9) + 1;
+    const int lastBar = juce::jmax (firstBar, (int) std::ceil (range.second / bpb - 1.0e-9));
+    const auto* t = getState().findTake (id);
+    notify ((t != nullptr ? "Take " + t->id.substring (1) : juce::String ("The new take"))
+            + (lastBar > firstBar ? " now plays bars " + juce::String (firstBar) + juce::String::fromUTF8 ("\xe2\x80\x93") + juce::String (lastBar)
+                                  : " now plays bar " + juce::String (firstBar)) + ".");
 }
 
 void SessionController::importFile (const juce::File& file)
@@ -549,65 +546,218 @@ void SessionController::importFile (const juce::File& file)
                                     : "That file couldn't be found.", true);
         return;
     }
-    mutate ([&file] (SessionState& s)
-    {
-        if (s.sourceKind == SessionState::SourceKind::Generated && s.generatedId.isNotEmpty())
-            s.restoreGeneratedId = s.generatedId;
-        s.sourceKind = SessionState::SourceKind::Imported;
-        s.importedPath = file.getFullPathName();
-    });
-    outputLoading = true;
-    outputMissing = false;
-    outputMessage = {};
-    const auto serial = ++loadSerial;
-    loader.post ([this, file, serial]
-    {
-        auto loaded = assets::loadFile (file, AudioAsset::Origin::Imported);
-        if (! loaded.ok())
-        {
-            const auto err = loaded.error, detail = loaded.detail;
-            logging::warning ("session", "Import failed: " + detail);
-            onMessageThread ([this, err, serial]
-            {
-                if (serial != loadSerial) return;
-                outputLoading = false;
-                outputMissing = true;
-                outputMessage = err;
-                notify (err, true);
-            });
-            return;
-        }
-        auto analysisResult = stretch::analyseMaterial (loaded.asset->audio, loaded.asset->sampleRate);
-        auto asset = loaded.asset;
-        onMessageThread ([this, asset, analysisResult, serial, file]
-        {
-            if (serial != loadSerial) return;
-            setOutputSource (asset, analysisResult);
-            notify ("Loaded " + file.getFileName());
-        });
-    });
-    sendChangeMessage();
+    pendingFill.reset();
+    const auto id = addTake (edit::Take::Kind::Imported, file.getFullPathName(), file.getFileName());
+    setBaseTake (id, true);
 }
 
-void SessionController::setOutputSource (AudioAsset::Ptr asset, std::optional<stretch::MaterialAnalysis> m)
+juce::String SessionController::addTake (edit::Take::Kind kind, const juce::String& ref, const juce::String& name)
 {
-    source = std::move (asset);
-    material = m;
-    outputLoading = false;
-    outputMissing = false;
-    outputMessage = {};
+    juce::String id;
+    mutate ([&] (SessionState& s)
+    {
+        for (auto& t : s.takes)
+            if (t.kind == kind && t.ref == ref)
+            {
+                if (name.isNotEmpty()) t.name = name;
+                id = t.id;
+                return;
+            }
+        edit::Take t;
+        t.id = s.nextTakeId();
+        t.kind = kind;
+        t.ref = ref;
+        t.name = name;
+        s.takes.push_back (t);
+        id = t.id;
+        // Keep the list short: drop the oldest takes that nothing uses any more.
+        while ((int) s.takes.size() > SessionState::maxTakes)
+        {
+            auto used = [&s] (const juce::String& tid)
+            {
+                if (tid == s.baseTake) return true;
+                for (const auto& c : s.arrangement.clips) if (c.take == tid) return true;
+                return false;
+            };
+            auto it = std::find_if (s.takes.begin(), s.takes.end(), [&] (const edit::Take& x) { return x.id != id && ! used (x.id); });
+            if (it == s.takes.end()) break;
+            s.takes.erase (it);
+        }
+    });
+    syncTakesRuntime();
+    return id;
+}
+
+void SessionController::setBaseTake (const juce::String& id, bool clearEdits)
+{
+    mutate ([&] (SessionState& s)
+    {
+        const auto* t = s.findTake (id);
+        if (t == nullptr)
+            return;
+        // "Restore generated" remembers the last generated base when a sample replaces it.
+        if (const auto* old = s.findTake (s.baseTake); old != nullptr && old->kind == edit::Take::Kind::Generated
+                                                       && t->kind == edit::Take::Kind::Imported)
+            s.restoreGeneratedId = old->ref;
+        s.baseTake = id;
+        s.sourceKind = t->kind == edit::Take::Kind::Imported ? SessionState::SourceKind::Imported : SessionState::SourceKind::Generated;
+        s.generatedId = t->kind == edit::Take::Kind::Generated ? t->ref : juce::String();
+        s.importedPath = t->kind == edit::Take::Kind::Imported ? t->ref : juce::String();
+        if (clearEdits)
+            s.arrangement = {};
+    });
+    syncTakesRuntime();
+    refreshBaseSource();
     requestRender();
+}
+
+void SessionController::syncTakesRuntime()
+{
+    const auto s = getState();
+    for (auto it = takeData.begin(); it != takeData.end();)
+        it = s.findTake (it->first) == nullptr ? takeData.erase (it) : std::next (it);
+    for (const auto& t : s.takes)
+        ensureTakeLoaded (t);
+}
+
+void SessionController::ensureTakeLoaded (const edit::Take& take)
+{
+    auto& rt = takeData[take.id];
+    if (rt.asset != nullptr || rt.loading)
+        return;
+    rt.loading = true;
+    rt.missing = false;
+    rt.message = {};
+    const auto serial = ++rt.serial;
+    const auto id = take.id;
+
+    if (take.kind == edit::Take::Kind::Generated)
+    {
+        auto r = deps.findGenerated ? deps.findGenerated (take.ref) : std::nullopt;
+        if (! r || ! r->localFile.existsAsFile())
+        {
+            rt.loading = false;
+            rt.missing = true;
+            rt.message = "The generated sound used here is no longer in Context's library.";
+            if (id == getState().baseTake)
+                refreshBaseSource();
+            return;
+        }
+        const auto result = *r;
+        loader.post ([this, id, serial, result]
+        {
+            auto loaded = assets::loadFile (result.localFile, AudioAsset::Origin::Generated);
+            if (! loaded.ok())
+            {
+                const auto err = loaded.error;
+                onMessageThread ([this, id, serial, err] { takeLoaded (id, serial, nullptr, std::nullopt, err); });
+                return;
+            }
+            auto asset = std::make_shared<AudioAsset> (*loaded.asset);
+            asset->generationId = result.generationId;
+            asset->displayName = result.prompt.isNotEmpty() ? result.prompt : result.localFile.getFileNameWithoutExtension();
+            asset->bpm = result.bpm;
+            asset->key = result.key;
+            asset->mode = result.mode;
+            asset->designedLoop = result.type == GenerationType::Loop;
+            asset->alignedToContext = contextmode::isAligned (result.metadata.getWithDefault ("contextMode", juce::var()).toString());
+            auto analysisResult = stretch::analyseMaterial (asset->audio, asset->sampleRate);
+            AudioAsset::Ptr constAsset = asset;
+            onMessageThread ([this, id, serial, constAsset, analysisResult] { takeLoaded (id, serial, constAsset, analysisResult, {}); });
+        });
+    }
+    else
+    {
+        const juce::File file (take.ref);
+        if (! file.existsAsFile())
+        {
+            rt.loading = false;
+            rt.missing = true;
+            rt.message = "Sample not found: " + file.getFileName();
+            if (id == getState().baseTake)
+                refreshBaseSource();
+            return;
+        }
+        loader.post ([this, id, serial, file]
+        {
+            auto loaded = assets::loadFile (file, AudioAsset::Origin::Imported);
+            if (! loaded.ok())
+            {
+                logging::warning ("session", "Import failed: " + loaded.detail);
+                const auto err = loaded.error;
+                onMessageThread ([this, id, serial, err] { takeLoaded (id, serial, nullptr, std::nullopt, err); });
+                return;
+            }
+            auto analysisResult = stretch::analyseMaterial (loaded.asset->audio, loaded.asset->sampleRate);
+            auto asset = loaded.asset;
+            onMessageThread ([this, id, serial, asset, analysisResult] { takeLoaded (id, serial, asset, analysisResult, {}); });
+        });
+    }
+}
+
+void SessionController::takeLoaded (const juce::String& id, juce::uint64 serial, AudioAsset::Ptr asset,
+                                    std::optional<stretch::MaterialAnalysis> m, juce::String error)
+{
+    auto it = takeData.find (id);
+    if (it == takeData.end() || it->second.serial != serial)
+        return;   // removed or reloaded meanwhile
+    auto& rt = it->second;
+    rt.loading = false;
+    const bool isBase = id == getState().baseTake;
+    if (asset == nullptr)
+    {
+        rt.missing = true;
+        rt.message = error;
+        if (isBase)
+            notify (error, true);
+    }
+    else
+    {
+        rt.asset = std::move (asset);
+        rt.material = m;
+        if (isBase && rt.asset->origin == AudioAsset::Origin::Imported)
+            notify ("Loaded " + rt.asset->displayName);
+    }
+    if (isBase)
+        refreshBaseSource();
+    requestRender();
+}
+
+void SessionController::refreshBaseSource()
+{
+    const auto base = getState().baseTake;
+    auto it = takeData.find (base);
+    if (it == takeData.end())
+    {
+        source.reset();
+        material.reset();
+        outputLoading = outputMissing = false;
+        outputMessage = {};
+    }
+    else
+    {
+        source = it->second.asset;
+        material = it->second.material;
+        outputLoading = it->second.loading;
+        outputMissing = it->second.missing;
+        outputMessage = it->second.message;
+    }
     sendChangeMessage();
 }
 
 void SessionController::clearOutput()
 {
     ++loadSerial;
+    if (renderToken)
+        renderToken->cancel();
+    pendingFill.reset();
+    takeData.clear();
     source.reset();
     material.reset();
     fitted.reset();
     fittedPeaks.reset();
     hasReport = false;
+    rendering = false;
     outputLoading = outputMissing = false;
     outputMessage = {};
     mutate ([] (SessionState& s)
@@ -617,6 +767,9 @@ void SessionController::clearOutput()
         s.sourceKind = SessionState::SourceKind::None;
         s.importedPath = {};
         s.generatedId = {};
+        s.takes.clear();
+        s.baseTake = {};
+        s.arrangement = {};
     });
     publishProgram();
 }
@@ -637,6 +790,302 @@ void SessionController::restoreGenerated()
     else
         notify ("The generated sound is no longer in Context's library.", true);
 }
+
+std::vector<SessionController::TakeInfo> SessionController::takes() const
+{
+    const auto s = getState();
+    const auto view = edit::materialise (s.arrangement, s.baseTake, totalBeats());
+    std::vector<TakeInfo> out;
+    for (const auto& t : s.takes)
+    {
+        TakeInfo i;
+        i.id = t.id;
+        i.number = t.id.substring (1).getIntValue();
+        i.name = t.name.isNotEmpty() ? t.name : juce::String ("Take ") + juce::String (i.number);
+        i.isBase = t.id == s.baseTake;
+        for (const auto& c : view.clips) i.used = i.used || c.take == t.id;
+        if (auto it = takeData.find (t.id); it != takeData.end())
+        {
+            i.loading = it->second.loading;
+            i.missing = it->second.missing;
+            i.ready = it->second.fitted != nullptr;
+            i.peaks = it->second.peaks;
+        }
+        out.push_back (i);
+    }
+    return out;
+}
+
+void SessionController::useTakeEverywhere (const juce::String& takeId)
+{
+    if (getState().findTake (takeId) != nullptr)
+        setBaseTake (takeId, true);
+}
+
+void SessionController::removeTake (const juce::String& takeId)
+{
+    const auto s = getState();
+    if (takeId == s.baseTake || s.findTake (takeId) == nullptr)
+        return;
+    mutate ([&] (SessionState& st)
+    {
+        st.takes.erase (std::remove_if (st.takes.begin(), st.takes.end(), [&] (const edit::Take& t) { return t.id == takeId; }), st.takes.end());
+        if (st.arrangement.isEdited())
+        {
+            auto& c = st.arrangement.clips;
+            c.erase (std::remove_if (c.begin(), c.end(), [&] (const edit::Clip& x) { return x.take == takeId; }), c.end());
+        }
+    });
+    takeData.erase (takeId);
+    requestRender();
+}
+
+// ---------------------------------------------------------------------------
+// Editing
+// ---------------------------------------------------------------------------
+
+double SessionController::totalBeats() const
+{
+    return getState().lengthBars * musical::quarterNotesPerBar (sessionTempo().signature);
+}
+
+template <typename Fn>
+void SessionController::editWith (Fn&& op)
+{
+    const auto s = getState();
+    if (s.baseTake.isEmpty() && ! s.arrangement.isEdited())
+        return;
+    auto e = op (s.arrangement, s.baseTake, totalBeats());
+    if (e == s.arrangement)
+        return;
+    mutate ([&e] (SessionState& st) { st.arrangement = e; });
+    requestRender();
+}
+
+SessionController::EditView SessionController::editView() const
+{
+    const auto s = getState();
+    EditView v;
+    v.totalBeats = totalBeats();
+    v.beatsPerBar = musical::quarterNotesPerBar (sessionTempo().signature);
+    v.edited = s.arrangement.isEdited();
+    v.baseTake = s.baseTake;
+    v.gridBeats = s.gridBeats;
+    v.pendingFill = pendingFill;
+    if (s.baseTake.isNotEmpty() || v.edited)
+        v.clips = edit::materialise (s.arrangement, s.baseTake, v.totalBeats).clips;
+    return v;
+}
+
+void SessionController::setGrid (double beats)
+{
+    beats = juce::jlimit (0.0, 16.0, beats);
+    mutate ([beats] (SessionState& s) { s.gridBeats = beats; });
+}
+
+void SessionController::editSplit (double beat)
+{
+    editWith ([beat] (const edit::Edit& e, const juce::String& b, double t) { return edit::splitAt (e, b, t, beat); });
+}
+
+void SessionController::editDelete (double from, double to)
+{
+    editWith ([=] (const edit::Edit& e, const juce::String& b, double t) { return edit::removeRange (e, b, t, from, to); });
+}
+
+void SessionController::editFill (double from, double to, const juce::String& take)
+{
+    editWith ([&] (const edit::Edit& e, const juce::String& b, double t) { return edit::fillFromTake (e, b, t, from, to, take); });
+}
+
+void SessionController::editMove (int clip, double start)
+{
+    editWith ([=] (const edit::Edit& e, const juce::String& b, double t) { return edit::moveClip (e, b, t, clip, start); });
+}
+
+void SessionController::editTrim (int clip, bool startEdge, double edge)
+{
+    editWith ([=] (const edit::Edit& e, const juce::String& b, double t) { return edit::trimClip (e, b, t, clip, startEdge, edge); });
+}
+
+void SessionController::editStretch (int clip, double end)
+{
+    editWith ([=] (const edit::Edit& e, const juce::String& b, double t) { return edit::stretchClip (e, b, t, clip, end); });
+}
+
+void SessionController::editClipGain (int clip, float db)
+{
+    editWith ([=] (const edit::Edit& e, const juce::String& b, double t) { return edit::setClipGain (e, b, t, clip, db); });
+}
+
+void SessionController::editCopy (double from, double to)
+{
+    const auto s = getState();
+    auto c = edit::copyRange (s.arrangement, s.baseTake, totalBeats(), from, to);
+    if (! c.empty())
+        clipboard = std::move (c);
+    sendChangeMessage();
+}
+
+void SessionController::editCut (double from, double to)
+{
+    editCopy (from, to);
+    editDelete (from, to);
+}
+
+void SessionController::editPaste (double at)
+{
+    if (clipboard.empty())
+        return;
+    const auto clips = clipboard;
+    editWith ([&] (const edit::Edit& e, const juce::String& b, double t) { return edit::paste (e, b, t, clips, at); });
+}
+
+void SessionController::editDuplicate (double from, double to)
+{
+    const auto s = getState();
+    const auto clips = edit::copyRange (s.arrangement, s.baseTake, totalBeats(), from, to);
+    if (clips.empty())
+        return;
+    editWith ([&] (const edit::Edit& e, const juce::String& b, double t) { return edit::paste (e, b, t, clips, to); });
+}
+
+void SessionController::editReset()
+{
+    if (! getState().arrangement.isEdited())
+        return;
+    mutate ([] (SessionState& s) { s.arrangement = {}; });
+    requestRender();
+}
+
+void SessionController::requestFill (double from, double to)
+{
+    if (to - from < edit::minClipBeats)
+        return;
+    pendingFill = std::make_pair (from, to);
+    sendChangeMessage();
+}
+
+void SessionController::cancelPendingFill()
+{
+    pendingFill.reset();
+    sendChangeMessage();
+}
+
+// ---------------------------------------------------------------------------
+// Undo / redo
+// ---------------------------------------------------------------------------
+
+SessionController::Snapshot SessionController::currentSnapshot() const
+{
+    Snapshot snap;
+    snap.state = getState();
+    snap.chain = deps.chain->toVar();
+    snap.key = snap.state.undoKey() + "|" + juce::JSON::toString (snap.chain, true);
+    return snap;
+}
+
+void SessionController::commitHistory()
+{
+    auto now = currentSnapshot();
+    quietTicks = 0;
+    if (now.key == committed.key)
+        return;
+    undoStack.push_back (std::move (committed));
+    if (undoStack.size() > 200)
+        undoStack.erase (undoStack.begin());
+    committed = std::move (now);
+    redoStack.clear();
+    sendChangeMessage();
+}
+
+bool SessionController::canUndo() const
+{
+    return ! undoStack.empty() || currentSnapshot().key != committed.key;
+}
+
+bool SessionController::canRedo() const { return ! redoStack.empty(); }
+
+void SessionController::undo()
+{
+    commitHistory();               // a change still settling becomes its own step first
+    if (undoStack.empty())
+        return;
+    auto target = std::move (undoStack.back());
+    undoStack.pop_back();
+    redoStack.push_back (std::move (committed));
+    committed = target;
+    applySnapshot (target);
+}
+
+void SessionController::redo()
+{
+    commitHistory();
+    if (redoStack.empty())
+        return;
+    auto target = std::move (redoStack.back());
+    redoStack.pop_back();
+    undoStack.push_back (std::move (committed));
+    committed = target;
+    applySnapshot (target);
+}
+
+void SessionController::beginGesture() { ++gestureDepth; }
+
+void SessionController::endGesture()
+{
+    gestureDepth = juce::jmax (0, gestureDepth - 1);
+    if (gestureDepth == 0)
+        commitHistory();
+}
+
+void SessionController::applySnapshot (const Snapshot& snap)
+{
+    const juce::ScopedValueSetter<bool> guard (applyingHistory, true);
+    if (juce::JSON::toString (deps.chain->toVar(), true) != juce::JSON::toString (snap.chain, true))
+        deps.chain->applyState (snap.chain);
+    const auto before = getState();
+    {
+        const juce::ScopedLock sl (stateLock);
+        state = snap.state;
+        state.playMode = before.playMode;            // transport and A/B are not part of history
+        state.compareOriginal = before.compareOriginal;
+        state.loop = before.loop;
+    }
+    pendingFill.reset();
+    reconcile (before);
+    quietTicks = 0;
+}
+
+void SessionController::reconcile (const SessionState& before)
+{
+    const auto after = getState();
+    applyEngineSettings();
+    const bool contextChanged = before.context.has_value() != after.context.has_value()
+                             || (before.context && after.context && before.context->id != after.context->id);
+    if (contextChanged)
+    {
+        if (after.context)
+            loadContextFromCache (*after.context);
+        else
+        {
+            contextAsset.reset();
+            contextPlayback.reset();
+            contextPeaks.reset();
+            ctxAnalysis.reset();
+            contextMissing = false;
+            contextMessage = {};
+            publishUploadContext();
+        }
+    }
+    deps.engine->setTempo (sessionTempo().bpm);
+    syncTakesRuntime();
+    refreshBaseSource();
+    requestRender();
+    scheduleExport();
+    sendChangeMessage();
+}
+
 
 SessionController::LaneInfo SessionController::outputLane() const
 {
@@ -713,9 +1162,50 @@ void SessionController::requestRender()
 {
     if (renderToken)
         renderToken->cancel();
-    if (source == nullptr)
+    const auto s = getState();
+    const auto tempo = sessionTempo();
+    const double rate = renderRate();
+    const int bars = s.lengthBars;
+
+    // Every loaded take is fitted to the same N bars (cached until something relevant changes),
+    // then the arrangement is composed from them.
+    struct Job
     {
-        rendering = false;
+        juce::String id, key;
+        AudioAsset::Ptr asset;
+        std::optional<stretch::MaterialAnalysis> material;
+        std::shared_ptr<const juce::AudioBuffer<float>> cached;
+        WaveformPeaks::Ptr cachedPeaks;
+        FitReport cachedReport;
+    };
+    std::vector<Job> jobs;
+    bool anyLoading = false;
+    for (const auto& t : s.takes)
+    {
+        auto it = takeData.find (t.id);
+        if (it == takeData.end())
+            continue;
+        anyLoading = anyLoading || it->second.loading;
+        if (it->second.asset == nullptr)
+            continue;
+        Job j;
+        j.id = t.id;
+        j.asset = it->second.asset;
+        j.material = it->second.material;
+        j.key << juce::String::toHexString ((juce::pointer_sized_int) j.asset.get()) << "|" << juce::JSON::toString (s.fit.toVar(), true)
+              << "|" << bars << "|" << tempo.bpm << "|" << tempo.signature.numerator << "/" << tempo.signature.denominator << "|" << rate;
+        if (j.key == it->second.fitKey && it->second.fitted != nullptr)
+        {
+            j.cached = it->second.fitted;
+            j.cachedPeaks = it->second.peaks;
+            j.cachedReport = it->second.report;
+        }
+        jobs.push_back (std::move (j));
+    }
+
+    if (jobs.empty())
+    {
+        rendering = anyLoading;
         fitted.reset();
         fittedPeaks.reset();
         hasReport = false;
@@ -729,59 +1219,129 @@ void SessionController::requestRender()
     rendering = true;
     renderProgress = 0.0f;
     fitError = {};
-
-    FitRequest req;
-    req.source = source;
-    req.tempo = sessionTempo();
-    req.bars = getState().lengthBars;
-    req.outputRate = renderRate();
-    req.settings = getState().fit;
-    req.material = material;
     auto token = renderToken;
+    const auto arrangement = s.arrangement;
+    const auto base = s.baseTake;
+    const auto fit = s.fit;
 
     renderer.clearPending();
-    renderer.post ([this, req, token, serial]
+    renderer.post ([this, jobs, token, serial, arrangement, base, fit, tempo, rate, bars]
     {
-        stretch::StretchProgress progress;
-        progress.cancel = token.get();
-        progress.report = [this] (float p) { renderProgress.store (p); };
+        struct Done
+        {
+            juce::String id, key, error;
+            std::shared_ptr<const juce::AudioBuffer<float>> audio;
+            WaveformPeaks::Ptr peaks;
+            FitReport report;
+        };
+        std::vector<Done> done;
+        edit::TakeAudio audio;
         const auto start = juce::Time::getMillisecondCounterHiRes();
-        auto result = timefit::render (req, progress);
-        if (token->isCancelled())
-            return;
-        WaveformPeaks::Ptr peaks;
-        if (result.ok())
-            peaks = WaveformPeaks::build (*result.audio, req.outputRate);
+        int index = 0;
+        const int toFit = (int) std::count_if (jobs.begin(), jobs.end(), [] (const Job& j) { return j.cached == nullptr; });
+        for (const auto& j : jobs)
+        {
+            if (token->isCancelled())
+                return;
+            if (j.cached != nullptr)
+            {
+                audio[j.id] = j.cached;
+                done.push_back ({ j.id, j.key, {}, j.cached, j.cachedPeaks, j.cachedReport });
+                continue;
+            }
+            FitRequest req;
+            req.source = j.asset;
+            req.tempo = tempo;
+            req.bars = bars;
+            req.outputRate = rate;
+            req.settings = fit;
+            req.material = j.material;
+            stretch::StretchProgress progress;
+            progress.cancel = token.get();
+            progress.report = [this, index, toFit] (float p) { renderProgress.store ((index + p) / (float) juce::jmax (1, toFit)); };
+            auto r = timefit::render (req, progress);
+            ++index;
+            if (token->isCancelled())
+                return;
+            if (r.ok())
+            {
+                audio[j.id] = r.audio;
+                done.push_back ({ j.id, j.key, {}, r.audio, WaveformPeaks::build (*r.audio, rate), r.report });
+            }
+            else
+                done.push_back ({ j.id, j.key, r.error, nullptr, nullptr, r.report });
+        }
+
+        std::shared_ptr<const juce::AudioBuffer<float>> composed;
+        WaveformPeaks::Ptr composedPeaks;
+        if (! arrangement.isEdited())
+        {
+            for (const auto& d : done)
+                if (d.id == base && d.audio != nullptr)
+                {
+                    composed = d.audio;
+                    composedPeaks = d.peaks;
+                }
+        }
+        else
+        {
+            const auto total = musical::samplesForBars (bars, tempo, rate);
+            composed = std::make_shared<const juce::AudioBuffer<float>> (edit::render (arrangement, base, audio, tempo, rate, total, fit.algorithm));
+            if (token->isCancelled())
+                return;
+            composedPeaks = WaveformPeaks::build (*composed, rate);
+        }
         const auto ms = juce::Time::getMillisecondCounterHiRes() - start;
-        onMessageThread ([this, result, peaks, serial, ms]
+        onMessageThread ([this, done, composed, composedPeaks, serial, ms, base]
         {
             if (serial != renderSerial)
                 return;   // a newer render superseded this one
             rendering = false;
             renderProgress = 1.0f;
-            if (result.ok())
+            juce::String baseError;
+            for (const auto& d : done)
             {
-                fitted = result.audio;
-                fittedPeaks = peaks;
-                report = result.report;
-                hasReport = true;
-                ++fittedSerial;
+                auto it = takeData.find (d.id);
+                if (it == takeData.end())
+                    continue;
+                if (d.audio != nullptr)
+                {
+                    it->second.fitted = d.audio;
+                    it->second.peaks = d.peaks;
+                    it->second.report = d.report;
+                    it->second.fitKey = d.key;
+                }
+                if (d.id == base)
+                {
+                    if (d.audio != nullptr)
+                    {
+                        report = d.report;
+                        hasReport = true;
+                    }
+                    else
+                        baseError = d.error;
+                }
+            }
+            fitted = composed;
+            fittedPeaks = composedPeaks;
+            ++fittedSerial;
+            if (hasReport)
                 logging::info ("session", "Fit: " + toLabel (report.modeUsed) + (report.engineUsed ? " / " + stretch::toLabel (report.algorithmUsed) : juce::String())
-                                          + ", " + juce::String (report.sourceBars, 2) + " -> " + juce::String (report.targetBars) + " bars in "
-                                          + juce::String (ms, 0) + " ms");
-                publishProgram();
-                scheduleExport();
-            }
-            else
+                                          + ", " + juce::String (report.sourceBars, 2) + " -> " + juce::String (report.targetBars) + " bars, "
+                                          + juce::String ((int) done.size()) + " take(s) in " + juce::String (ms, 0) + " ms");
+            if (baseError.isNotEmpty())
             {
-                fitError = result.error;
-                notify (result.error, true);
+                fitError = baseError;
+                notify (baseError, true);
             }
+            publishProgram();
+            scheduleExport();
             sendChangeMessage();
         });
     });
     sendChangeMessage();
 }
+
 
 // ---------------------------------------------------------------------------
 // Playback
@@ -832,6 +1392,12 @@ void SessionController::togglePlay()
 void SessionController::rewind()
 {
     deps.engine->rewind();
+    sendChangeMessage();
+}
+
+void SessionController::seek (juce::int64 samples)
+{
+    deps.engine->seek (samples);
     sendChangeMessage();
 }
 
@@ -1033,6 +1599,20 @@ void SessionController::timerCallback()
 {
     deps.engine->collectGarbage();
     deps.chain->collectGarbage();
+
+    // Undo history: a change becomes a step once things have been quiet for ~0.25 s
+    // (or when a gesture such as a knob drag ends).
+    if (! applyingHistory && gestureDepth == 0)
+    {
+        const auto key = currentSnapshot().key;
+        if (key != lastSeenKey)
+        {
+            lastSeenKey = key;
+            quietTicks = 0;
+        }
+        else if (key != committed.key && ++quietTicks >= 8)
+            commitHistory();
+    }
 
     // Capture lifecycle (the recorder runs on the audio thread; we poll its state).
     switch (deps.recorder->getState())

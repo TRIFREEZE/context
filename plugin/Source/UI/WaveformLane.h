@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Theme.h"
+#include "Motion.h"
 #include "Audio/AudioAsset.h"
 #include "Audio/MusicalTime.h"
 
@@ -30,6 +31,10 @@ public:
     void setTimeline (const TimelineView&);
     void setPlayhead (juce::int64 samples, bool visible);
     void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent& e) override { mouseDrag (e); }
+    void mouseDrag (const juce::MouseEvent&) override;
+
+    std::function<void (juce::int64 sample)> onSeek;   // click / scrub on the ruler
 
 private:
     TimelineView view;
@@ -97,7 +102,8 @@ private:
     bool capturing = false;
     bool dragHover = false, dragging = false;
 
-    juce::Image cache;
+    juce::Image cache, previous;   // previous: the old waveform, cross-faded out on a change
     bool cacheValid = false;
+    motion::Value swap { 1.0f };
 };
 } // namespace context::ui

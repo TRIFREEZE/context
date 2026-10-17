@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Theme.h"
+#include "Motion.h"
 #include "DSP/EffectParameter.h"
 
 namespace context::ui
@@ -32,12 +33,14 @@ public:
 
 private:
     int indexAt (juce::Point<int>) const;
+    void movePill (bool animate);
     juce::StringArray items, tips;
     juce::Array<bool> enabled;
     juce::Array<juce::Rectangle<int>> cells;
     int selected = -1, hovered = -1;
     bool proportional = false;
-    float fontSize = 11.5f;
+    float fontSize = type::label;
+    motion::Rect pill;          // the selection slides between segments
 };
 
 /** Small square lane toggle ("M", "S"). */
@@ -55,7 +58,8 @@ private:
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { Play, Stop, Rewind, Loop, Power, Plus, Folder, Copy, Star, StarFilled, Drag, Record, Close, Save, More, Refresh, Variation };
+    enum class Icon { Play, Stop, Rewind, Loop, Power, Plus, Folder, Copy, Star, StarFilled, Drag, Record, Close, Save, More, Refresh, Variation,
+                      Undo, Redo, Split, Trash, Keys, Sparkle, Takes, Magnet, Help };
     explicit IconButton (Icon, const juce::String& tooltip = {});
     void setIcon (Icon i) { icon = i; repaint(); }
     void setOnColour (juce::Colour c) { onColour = c; repaint(); }
@@ -77,6 +81,7 @@ public:
     /** Preferred size in the inspector grid. */
     virtual int preferredWidth() const { return 64; }
     std::function<void()> onEdit;    // after the user changed the value
+    std::function<void()> onGestureStart, onGestureEnd;   // a drag: one undo step
     fx::EffectParameter& param;
 };
 

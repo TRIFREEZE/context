@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "Controls.h"
 #include "Generation/GenerationModels.h"
 
 namespace context
@@ -36,9 +37,10 @@ private:
     ContextAudioProcessor& processor;
     Filter filter = Filter::Recent;
     std::vector<GenerationResult> items;
-    juce::TextButton recentButton { "Recent" }, favoritesButton { "Favorites" }, allButton { "All History" };
+    SegmentedControl filterSwitch;
     juce::ListBox list;
     juce::Label emptyLabel, infoLabel;
+    juce::Rectangle<int> columnHeader;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (HistoryTab)
 };

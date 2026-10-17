@@ -16,6 +16,8 @@ public:
     EffectChip (EffectRackPanel&, int index);
     void update (const juce::String& label, bool bypassed, bool selected);
     int getIndex() const noexcept { return index; }
+    /** Slides to `target` (or jumps there the first time). */
+    void moveTo (juce::Rectangle<int> target, juce::Rectangle<int> from = {});
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -30,6 +32,7 @@ private:
     int index;
     juce::String label;
     bool bypassed = false, selected = false, dragging = false;
+    motion::Rect place;
 };
 
 /** EQ response curve with band handles (click a handle to edit that band). */
@@ -96,6 +99,8 @@ private:
     juce::Point<int> dragPos;
     int draggingIndex = -1;
     float meterDb = 0.0f;
+    std::map<juce::String, juce::Rectangle<int>> lastChipBounds;   // by instance id, for slide animations
+    motion::Value inspectorFade { 1.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EffectRackPanel)
 };

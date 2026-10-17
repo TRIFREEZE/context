@@ -11,7 +11,7 @@
 | zlib (bundled in JUCE) | as shipped in JUCE | compression | zlib |
 | libpng / jpeglib (bundled in JUCE) | as shipped in JUCE | image formats | zlib / IJG |
 | FLAC, Ogg Vorbis (bundled in JUCE) | as shipped in JUCE | audio codecs: generated results are validated as WAV/AIFF; V2 sample import also reads FLAC/OGG | BSD |
-| Inter typeface (Regular, Medium, SemiBold) | 4.0 (`plugin/Resources/fonts`) | UI font, embedded as binary data | SIL Open Font License 1.1 — `plugin/Resources/fonts/Inter-OFL-LICENSE.txt` (shipped next to the plugin as `Inter-OFL-LICENSE.txt`) |
+| Barlow typeface (Regular, Medium, SemiBold) | 1.408 (`plugin/Resources/fonts`, from github.com/google/fonts) | UI font, embedded as binary data | SIL Open Font License 1.1 — `plugin/Resources/fonts/Barlow-OFL-LICENSE.txt` (shipped next to the plugin as `Barlow-OFL-LICENSE.txt`) |
 | Monocypher (+ optional Ed25519) | 4.0.2 (`third_party/monocypher`) | verify license-token signatures | BSD-2-Clause **or** CC0-1.0 |
 
 Used from the operating system, not distributed: MP3 decoding for V2 sample import goes through

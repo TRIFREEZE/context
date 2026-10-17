@@ -64,7 +64,41 @@ juce::var Capabilities::toVar() const
     o->setProperty ("generationTypes", t);
     o->setProperty ("features", f);
     o->setProperty ("maxDurationSeconds", maxDurationSeconds);
+    if (! contextModes.isEmpty())
+    {
+        juce::Array<juce::var> m;
+        for (auto& x : contextModes) m.add (x);
+        o->setProperty ("contextModes", m);
+    }
     return juce::var (o);
+}
+
+juce::StringArray Capabilities::usableContextModes() const
+{
+    if (! has (Feature::AudioConditioning))
+        return {};
+    if (! contextModes.isEmpty())
+        return contextModes;
+    juce::StringArray m { contextmode::layer };
+    if (has (Feature::Cover))        m.add (contextmode::cover);
+    if (has (Feature::Continuation)) m.add (contextmode::extend);
+    return m;
+}
+
+namespace contextmode
+{
+    juce::String label (const juce::String& m)
+    {
+        if (m == cover)  return "Restyle";
+        if (m == extend) return "Continue";
+        return "Layer";
+    }
+    juce::String tooltip (const juce::String& m)
+    {
+        if (m == cover)  return "Re-imagine your captured bars in the prompt's style (new timing).";
+        if (m == extend) return "Generate what comes after your captured bars, in time with them.";
+        return "Make a part that plays on top of your captured bars: same tempo, key and timing.";
+    }
 }
 
 Capabilities Capabilities::fromVar (const juce::var& v, const Capabilities& fallback)
@@ -86,6 +120,16 @@ Capabilities Capabilities::fromVar (const juce::var& v, const Capabilities& fall
     }
     if (auto m = json::getNumber (v, "maxDurationSeconds"))
         c.maxDurationSeconds = juce::jlimit (1, 600, (int) *m);
+    if (auto* arr = json::getPath (v, "contextModes").getArray())
+    {
+        c.contextModes.clear();
+        for (auto& x : *arr)
+        {
+            const auto id = x.toString();
+            if ((id == contextmode::layer || id == contextmode::cover || id == contextmode::extend) && ! c.contextModes.contains (id))
+                c.contextModes.add (id);
+        }
+    }
     return c;
 }
 
@@ -205,6 +249,7 @@ juce::var GenerationRequest::toVar() const
     if (variationOfGenerationId.isNotEmpty()) o->setProperty ("variationOf", variationOfGenerationId);
     if (variationOfRemoteId.isNotEmpty())     o->setProperty ("variationOfRemoteId", variationOfRemoteId);
     if (contextAnalysis && contextAnalysis->valid) o->setProperty ("context", contextAnalysis->toVar());
+    if (contextMode.isNotEmpty()) o->setProperty ("contextMode", contextMode);
     return juce::var (o);
 }
 
@@ -224,6 +269,9 @@ GenerationRequest GenerationRequest::fromVar (const juce::var& v)
     if (auto d = json::getNumber (v, "seed"))            r.seed = (juce::int64) *d;
     r.variationOfGenerationId = json::getString (v, "variationOf").value_or ("");
     r.variationOfRemoteId     = json::getString (v, "variationOfRemoteId").value_or ("");
+    const auto cm = json::getString (v, "contextMode").value_or ("");
+    if (cm == contextmode::layer || cm == contextmode::cover || cm == contextmode::extend)
+        r.contextMode = cm;
     return r;
 }
 

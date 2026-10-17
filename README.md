@@ -31,7 +31,22 @@ your DAW.
 * Everything is saved with the DAW project (settings and references only — no audio, no
   credentials). Older projects load unchanged.
 
-See [ARCHITECTURE.md — Part II](ARCHITECTURE.md#part-ii--context-v2-workspace) and
+### New in V2.1
+
+* **Send my track** — the captured bars go to the bridge so results are made *on* your track:
+  *Layer* (a vocal or instrument part that plays on top, sample-aligned), *Restyle* or *Continue*.
+  The Kie.ai bridge does this with Kie.ai's documented upload, add-vocals, cover, extend and
+  stem-separation models.
+* **No dead space** — silence before the first sound (and dead air at the end) is removed from
+  generations, so they start on bar 1.
+* **Edit like a sampler** — select, split, delete, move, trim and stretch clips on the sound lane;
+  comp bars from earlier **takes**; **fill a selection with a new take** in the same style.
+* **Undo / redo** for everything that is the work (edits, takes, fit, effects, knob drags, captures).
+* **Keyboard** — Space, Home, L, 1/2/3, R, A, S, F, Delete, Ctrl+C/X/V/D/A, Ctrl+Z, `?` for the list.
+* **Interface** — Barlow type, graphite surfaces, motion on every control (Settings → Reduce
+  motion turns it off), and one consistent dialog style everywhere.
+
+See [ARCHITECTURE.md — Parts II and III](ARCHITECTURE.md#part-ii--context-v2-workspace) and
 [docs/OPERATING_GUIDE.md](docs/OPERATING_GUIDE.md) sections R–U2.
 
 ---
@@ -217,7 +232,7 @@ python -m pytest backend/tests
 
 | Test | What it covers |
 |---|---|
-| `unit_tests` | ~4,700 checks. V2: bar/sample maths (120 BPM 4/4: 4 bars = 8 s, 8 bars = 16 s, several sample rates), exact-bar capture termination, resampling, every fit mode and stretch algorithm, effect parameters/serialisation, chain reorder/bypass/latency, "every visible control changes the audio", two-lane sync, session state (old, missing and malformed fields). Original: passthrough at 44.1/48/96 kHz and 16–4096-sample blocks, capture ring buffer (incl. concurrency), key/spectral/stereo/transient analysis, PromptBuilder, filename sanitiser, redaction, URL policy, JSON hardening, bridge profiles and adapter parsing, mock generation (cancel, timeout, failures, rapid clicks), history/cache rules, license tokens and offline grace, processor state, editor open/close, UI snapshots |
+| `unit_tests` | ~5,700 checks. V2.1: arrangement operations and rendering (bit-exact splits, crossfaded fills, stretch), takes and fills, undo/redo incl. knob gestures, dead-space removal, context-aligned fitting, keyboard shortcuts, context-mode serialisation. V2: bar/sample maths (120 BPM 4/4: 4 bars = 8 s, 8 bars = 16 s, several sample rates), exact-bar capture termination, resampling, every fit mode and stretch algorithm, effect parameters/serialisation, chain reorder/bypass/latency, "every visible control changes the audio", two-lane sync, session state (old, missing and malformed fields). Original: passthrough at 44.1/48/96 kHz and 16–4096-sample blocks, capture ring buffer (incl. concurrency), key/spectral/stereo/transient analysis, PromptBuilder, filename sanitiser, redaction, URL policy, JSON hardening, bridge profiles and adapter parsing, mock generation (cancel, timeout, failures, rapid clicks), history/cache rules, license tokens and offline grace, processor state, editor open/close, UI snapshots |
 | `bridge_integration` | real HTTP against the reference bridge: connection statuses, generation, audio-context upload, Unicode prompts, cancel, and every failure mode (malformed/huge/deep JSON, bad/empty/150 MB WAV, expired URL, vanished job, bridge dying mid-request, non-local audio URL) |
 | `license_integration` | real FastAPI backend + the plugin's C++ license manager: activation, reload, device limit, deactivation, revocation, wrong public key, update check |
 | `vst3_host_load` | loads the **built Context.vst3** through JUCE's VST3 hosting like a DAW: scan, instantiate at 3 sample rates, bit-exact passthrough, state, editor, two instances |
@@ -247,7 +262,7 @@ plugin/Source/
   Storage/                  logger, history, cache manager
   UI/                       design system (Theme, Controls), Workspace (prompt, lanes, fit,
                             effect rack, transport), History / Settings tabs, onboarding
-plugin/Resources/fonts/     Inter (SIL OFL 1.1), embedded in the plugin
+plugin/Resources/fonts/     Barlow (SIL OFL 1.1), embedded in the plugin
   Utils/                    sanitiser, redaction, URL safety, JSON safety, atomic files
 backend/                    FastAPI licensing server, admin CLI, tests
 tools/reference_bridge/     test bridge implementing the Context Bridge Protocol

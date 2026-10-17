@@ -8,47 +8,65 @@
     tokens instead of inventing their own values, which keeps the interface consistent
     and makes later restyling a one-file change.
 
-    Direction: dark neutral greys, information-dense, thin separators instead of boxes,
-    small radii, one restrained teal accent for "active / yours / play". */
+    Direction: a studio instrument, not a web page. Graphite surfaces with real depth
+    (wells are darker than the panel, controls are lighter), Barlow (a DIN-style grotesk
+    from road and hardware lettering) in sentence case, hairlines instead of boxes, and
+    colour that means something:
+        silver  = your track (the captured context)
+        teal    = the sound Context makes, and every "go" action
+        amber   = a lamp: recording / armed / attention
+    Motion answers what the user does (see Motion.h); nothing moves on its own except the
+    playhead and progress. */
 namespace context::ui
 {
 namespace colours
 {
     // Surfaces (darkest to lightest)
-    inline const juce::Colour background { 0xff0d0e10 };   // window
-    inline const juce::Colour well       { 0xff0a0b0c };   // waveform wells, text fields
-    inline const juce::Colour panel      { 0xff131518 };   // sections / top bar
-    inline const juce::Colour raised     { 0xff1b1e22 };   // controls
-    inline const juce::Colour hover      { 0xff23272c };   // hovered controls
-    inline const juce::Colour pressed    { 0xff2a2f35 };
+    inline const juce::Colour well       { 0xff111316 };   // waveform wells, text fields
+    inline const juce::Colour background { 0xff17191c };   // window
+    inline const juce::Colour panel      { 0xff1c1f23 };   // top bar, prompt, sheets
+    inline const juce::Colour raised     { 0xff24282d };   // controls
+    inline const juce::Colour hover      { 0xff2c3137 };   // hovered controls
+    inline const juce::Colour pressed    { 0xff343a41 };
 
     // Lines
-    inline const juce::Colour border     { 0xff272b31 };   // control outlines
-    inline const juce::Colour line       { 0xff1f2226 };   // section separators
-    inline const juce::Colour grid       { 0xff1b1e21 };   // bar grid inside wells
+    inline const juce::Colour border     { 0xff30353b };   // control outlines
+    inline const juce::Colour line       { 0xff25292e };   // section separators
+    inline const juce::Colour grid       { 0xff1d2024 };   // bar grid inside wells
 
     // Text
-    inline const juce::Colour text       { 0xffe6e8eb };   // primary
-    inline const juce::Colour dim        { 0xffa0a6ae };   // secondary
-    inline const juce::Colour faint      { 0xff6a7079 };   // tertiary / labels
-    inline const juce::Colour disabled   { 0xff40454c };
+    inline const juce::Colour text       { 0xffe9ebee };   // primary
+    inline const juce::Colour dim        { 0xffa3a9b1 };   // secondary
+    inline const juce::Colour faint      { 0xff707780 };   // tertiary / labels
+    inline const juce::Colour disabled   { 0xff464b52 };
 
-    // Accent (used sparingly: selection, play, the output you made)
-    inline const juce::Colour accent     { 0xff3ccfc0 };
-    inline const juce::Colour accentHi   { 0xff66ddd1 };
-    inline const juce::Colour accentDark { 0xff15403c };
-    inline const juce::Colour accentText { 0xff051312 };   // text on accent fills
+    // Teal: the sound you make, selection, play
+    inline const juce::Colour accent     { 0xff43c7b8 };
+    inline const juce::Colour accentHi   { 0xff6fd8cc };
+    inline const juce::Colour accentDark { 0xff17423e };
+    inline const juce::Colour accentText { 0xff06201d };   // text on accent fills
+
+    // Amber lamp: recording, armed, attention
+    inline const juce::Colour lamp       { 0xffe6a04a };
+    inline const juce::Colour lampDark   { 0xff4a3519 };
 
     // Signals
-    inline const juce::Colour good       { 0xff5fcb8b };
-    inline const juce::Colour warn       { 0xffe8b65c };
-    inline const juce::Colour bad        { 0xffe26d6d };
-    inline const juce::Colour favorite   { 0xffe8b65c };
-    inline const juce::Colour record     { 0xffe25d5d };
+    inline const juce::Colour good       { 0xff63c98d };
+    inline const juce::Colour warn       { 0xffe6a04a };
+    inline const juce::Colour bad        { 0xffe0706b };
+    inline const juce::Colour favorite   { 0xffe6a04a };
+    inline const juce::Colour record     { 0xffe0574f };
 
     // Waveforms
-    inline const juce::Colour waveform   { 0xff3ccfc0 };   // output lane
-    inline const juce::Colour contextWave{ 0xff8b96a3 };   // track context lane
+    inline const juce::Colour waveform   { 0xff43c7b8 };   // output lane
+    inline const juce::Colour contextWave{ 0xff9aa7b4 };   // track context lane (silver)
+    inline const juce::Colour selection  { 0x3343c7b8 };   // selected range on a lane
+
+    // Overlay behind sheets
+    inline const juce::Colour scrim      { 0xa0090a0c };
+
+    /** Distinct but quiet colours for takes (take 1, 2, 3...). */
+    juce::Colour forTake (int number);
 }
 
 namespace space
@@ -70,16 +88,22 @@ namespace layout
 
 namespace height
 {
-    inline constexpr int small = 20, control = 24, large = 30, topBar = 40, transport = 46;
+    inline constexpr int small = 20, control = 24, large = 30, topBar = 42, transport = 48;
+}
+
+/** Type scale (Barlow): meta 11.5, label 12, body 13, title 15, readout 20. */
+namespace type
+{
+    inline constexpr float meta = 11.5f, label = 12.0f, body = 13.0f, title = 15.0f, readout = 20.0f;
 }
 
 enum class Weight { Regular, Medium, SemiBold };
 
-/** Inter (embedded) at the requested size and weight. */
+/** Barlow (embedded) at the requested size and weight. */
 juce::Font font (float size, Weight = Weight::Regular);
 /** Tabular figures for numbers that change (BPM, times, values). */
 juce::Font numberFont (float size, Weight = Weight::Medium);
-/** Small uppercase label style (section names, lane names). */
+/** Section / lane names: sentence case, medium weight, small. */
 juce::Font labelFont();
 
 /** Dark, flat, compact look for every JUCE control in the plugin. */
@@ -122,6 +146,9 @@ public:
     juce::Font getAlertWindowTitleFont() override;
     juce::Font getLabelFont (juce::Label&) override;
     void drawLabel (juce::Graphics&, juce::Label&) override;
+    juce::PopupMenu::Options getOptionsForComboBoxPopupMenu (juce::ComboBox&, juce::Label&) override;
+    int getPopupMenuBorderSize() override { return 5; }
+    void drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics&, const juce::Path&, juce::Image&) override;
 
     /** Kept for the existing tabs: bold = SemiBold. */
     static juce::Font font (float height, bool bold = false);
@@ -141,12 +168,12 @@ inline void paintCard (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour
     g.drawRoundedRectangle (r.reduced (0.5f), radius::panel, 1.0f);
 }
 
-/** Small uppercase section label. */
-inline void paintHeading (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> r, juce::Colour c = colours::faint)
+/** Section label (sentence case: "Track context", "Processing"). */
+inline void paintHeading (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> r, juce::Colour c = colours::dim)
 {
     g.setColour (c);
     g.setFont (labelFont());
-    g.drawText (text.toUpperCase(), r, juce::Justification::centredLeft, true);
+    g.drawText (text, r, juce::Justification::centredLeft, true);
 }
 
 inline void paintSeparator (juce::Graphics& g, int y, int x0, int x1)
@@ -156,7 +183,7 @@ inline void paintSeparator (juce::Graphics& g, int y, int x0, int x1)
 }
 
 /** Button variants (stored as a component property; the look-and-feel reads it). */
-enum class ButtonStyle { Secondary, Primary, Ghost, Toggle, Danger, Tab };
+enum class ButtonStyle { Secondary, Primary, Ghost, Toggle, Danger, Tab, Nav };
 void setStyle (juce::Button&, ButtonStyle);
 
 inline void stylePrimary (juce::TextButton& b) { setStyle (b, ButtonStyle::Primary); }

@@ -2,12 +2,15 @@
 
 #include "Controls.h"
 #include "WaveformLane.h"
+#include "ArrangementOverlay.h"
+#include "SelectionBar.h"
 
 namespace context { class ContextAudioProcessor; }
 
 namespace context::ui
 {
-/** TRACK CONTEXT above AI / SAMPLE on one musical timeline, plus the fit controls. */
+/** "Your track" (the captured context) above "Sound" (generated / imported, editable) on
+    one musical timeline, plus the fit controls. */
 class LanesPanel : public juce::Component
 {
 public:
@@ -17,6 +20,9 @@ public:
     void refresh();
     void tick();
     void openSampleChooser();
+    /** Editing keys (S, Delete, F, Ctrl+C/X/V/D/A, G, Esc). True if used. */
+    bool handleKey (const juce::KeyPress&);
+    ArrangementOverlay& arrangement() { return overlay; }
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -27,6 +33,17 @@ private:
     TimelineView computeTimeline() const;
     void showContextMenu();
     void showOutputMenu();
+    void showEditMenu (juce::Point<int>);
+    void showTakesMenu();
+    void showFillFromMenu (juce::Component* target);
+    void addOutputItems (juce::PopupMenu&, int base);
+    void handleOutputItem (int r);
+    double playheadBeat() const;
+    void splitAtSelectionOrPlayhead();
+    void deleteSelection();
+    void fillWithNewTake();
+    void updateSelectionBar();
+    juce::String rangeText (double from, double to) const;
     void layoutLaneHeader (juce::Rectangle<int> area, bool context);
     juce::String outputDetail() const;
     juce::String fitSummary() const;
@@ -36,6 +53,10 @@ private:
     TimelineRuler ruler;
     WaveformLane contextLane { colours::contextWave, false };
     WaveformLane outputLane { colours::waveform, true };
+    ArrangementOverlay overlay;
+    SelectionBar selectionBar;
+    juce::ComboBox snap;
+    juce::TextButton takesButton;
 
     juce::TextButton captureButton { "Capture" }, loadButton { "Load sample" };
     juce::TextButton retargetButton, recaptureButton { "Capture again" };

@@ -102,9 +102,9 @@ juce_add_binary_data(context_assets
     HEADER_NAME ContextAssets.h
     NAMESPACE ContextAssets
     SOURCES
-        plugin/Resources/fonts/Inter-Regular.ttf
-        plugin/Resources/fonts/Inter-Medium.ttf
-        plugin/Resources/fonts/Inter-SemiBold.ttf)
+        plugin/Resources/fonts/Barlow-Regular.ttf
+        plugin/Resources/fonts/Barlow-Medium.ttf
+        plugin/Resources/fonts/Barlow-SemiBold.ttf)
 set_target_properties(context_assets PROPERTIES POSITION_INDEPENDENT_CODE ON FOLDER "assets")
 
 # ---------------------------------------------------------------------------

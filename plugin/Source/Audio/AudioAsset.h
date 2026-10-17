@@ -35,6 +35,12 @@ struct AudioAsset
     std::optional<double> bpm;
     juce::String key, mode;
 
+    // How the generator made it (generated assets only).
+    bool designedLoop = false;           // asked for as a seamless loop
+    bool alignedToContext = false;       // generated ON the captured context (layer / continue):
+                                         // sample 0 is bar 1 of the context, so it must not be
+                                         // trimmed or stretched to stay in time with the track
+
     int numChannels() const noexcept         { return audio.getNumChannels(); }
     juce::int64 numSamples() const noexcept  { return audio.getNumSamples(); }
     double seconds() const noexcept          { return sampleRate > 0.0 ? audio.getNumSamples() / sampleRate : 0.0; }
