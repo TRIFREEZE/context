@@ -1,0 +1,28 @@
+CONTEXT — WINDOWS VST3 INSTALL
+==============================
+
+1. Close FL Studio (or your DAW).
+
+2. Copy the whole "Context.vst3" folder from this ZIP into:
+
+       C:\Program Files\Common Files\VST3
+
+   Copy the folder itself, not just the file inside it.
+   If an older Context.vst3 is already there, replace only that one folder.
+   Do not delete or overwrite any other plugins.
+
+3. Open FL Studio.
+
+4. Options > Manage plugins > click "Find installed plugins"
+   (tick "Verify plugins" if you want a full rescan).
+
+5. Find "Context" in the list and click the star to make it a favorite.
+
+6. Load it on a Mixer insert: Mixer > select an insert slot > Context.
+   Put it on the track (or the master) you want Context to listen to.
+
+Logs, settings, history and generated audio live in:
+
+       %APPDATA%\Context
+
+(Paste that into the Windows Explorer address bar.)

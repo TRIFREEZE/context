@@ -1,0 +1,44 @@
+# Build output
+/build/
+/build-*/
+/out/
+/artifact/
+/*.zip
+/.deps/
+CMakeUserPresets.json
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Licensing backend data and SECRETS — never commit these
+backend/keys/
+backend/data/
+*.pem
+*.key
+*.sqlite
+*.sqlite3
+*.db
+.env
+.env.*
+
+# User-generated audio and local app data
+*.wav
+*.aif
+*.aiff
+!tests/fixtures/*.wav
+
+# Browser / session data (Context never creates these, but never commit them)
+cookies*
+*.har
+
+# OS
+.DS_Store
+Thumbs.db

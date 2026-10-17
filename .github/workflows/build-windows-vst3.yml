@@ -1,0 +1,183 @@
+name: Windows VST3
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-vst3-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PRODUCT_NAME: Context            # must match CONTEXT_PRODUCT_NAME in CMakeLists.txt
+  BUILD_DIR: build
+  # This build needs NO secrets: no provider credentials, no cookies, no signing keys.
+
+jobs:
+  build:
+    name: Build, test and package (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read pinned JUCE commit
+        id: juce
+        shell: pwsh
+        run: |
+          $commit = (Get-Content dependencies/JUCE_COMMIT -TotalCount 1).Trim()
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+
+      - name: Cache JUCE source
+        uses: actions/cache@v4
+        with:
+          path: .deps/JUCE
+          key: juce-${{ steps.juce.outputs.commit }}
+
+      - name: Fetch pinned JUCE
+        shell: pwsh
+        run: ./scripts/fetch-juce.ps1
+
+      - name: Show tool versions
+        shell: pwsh
+        run: |
+          cmake --version
+          python --version
+          git --version
+
+      - name: Check tag matches project version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $line = Select-String -Path CMakeLists.txt -Pattern '^project\(Context VERSION ([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+          if (-not $line) { throw "Could not read project version from CMakeLists.txt" }
+          $version = $line.Matches[0].Groups[1].Value
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          if ($tag -ne $version) { throw "Tag v$tag does not match CMake project version $version. Update project(Context VERSION ...) first." }
+          Write-Host "Tag and version agree: $version"
+
+      # Visual Studio generators are multi-config: the configuration is chosen at
+      # build time with --config, not with CMAKE_BUILD_TYPE.
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B ${{ env.BUILD_DIR }} -A x64
+          -DFETCHCONTENT_SOURCE_DIR_JUCE="${{ github.workspace }}/.deps/JUCE"
+          -DCONTEXT_BUILD_TESTS=ON
+          -DCONTEXT_BUILD_STANDALONE=ON
+
+      - name: Build (Release)
+        shell: pwsh
+        run: cmake --build ${{ env.BUILD_DIR }} --config Release --parallel
+
+      - name: Licensing backend tests
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-dev.txt
+          python -m pytest backend/tests -q
+
+      - name: Plugin unit + bridge integration tests
+        shell: pwsh
+        run: ctest --test-dir ${{ env.BUILD_DIR }} -C Release --output-on-failure
+
+      - name: Locate VST3 bundle
+        id: locate
+        shell: pwsh
+        run: |
+          $name = "${{ env.PRODUCT_NAME }}.vst3"
+          $candidates = Get-ChildItem -Path "${{ env.BUILD_DIR }}" -Recurse -Directory -Filter $name |
+                        Where-Object { $_.FullName -match '[\\/]Release[\\/]VST3[\\/]' }
+          if (-not $candidates) {
+            Write-Host "Directories named $name found anywhere:"
+            Get-ChildItem -Path "${{ env.BUILD_DIR }}" -Recurse -Filter $name | ForEach-Object { Write-Host "  $($_.FullName)" }
+            throw "$name (Release VST3 bundle) was not produced by the build."
+          }
+          $bundle = $candidates | Select-Object -First 1
+          $dll = Get-ChildItem -Path $bundle.FullName -Recurse -File -Filter $name | Select-Object -First 1
+          if (-not $dll) { throw "VST3 bundle exists but contains no $name binary: $($bundle.FullName)" }
+          Write-Host "Bundle: $($bundle.FullName)"
+          Write-Host "Binary: $($dll.FullName) ($([math]::Round($dll.Length/1MB,2)) MB)"
+          "bundle=$($bundle.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Package artifact folder
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force artifact -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path artifact | Out-Null
+          # Copy the whole bundle directory so its internal structure is preserved.
+          Copy-Item -Recurse -Path "${{ steps.locate.outputs.bundle }}" -Destination "artifact/${{ env.PRODUCT_NAME }}.vst3"
+          Copy-Item docs/INSTALL-WINDOWS.txt artifact/INSTALL.txt
+          Get-ChildItem -Recurse artifact | ForEach-Object { Write-Host $_.FullName.Replace("$PWD\", "") }
+          Compress-Archive -Path "artifact/*" -DestinationPath "${{ env.PRODUCT_NAME }}-Windows-VST3.zip" -Force
+
+      - name: Upload VST3 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT_NAME }}-Windows-VST3
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Standalone app (debugging aid)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT_NAME }}-Windows-Standalone
+          path: ${{ env.BUILD_DIR }}/Context_artefacts/Release/Standalone/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep release ZIP for the release job
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-zip
+          path: ${{ env.PRODUCT_NAME }}-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build              # only runs when build + all tests passed
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: release-zip
+
+      - name: Create or update release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $zip = "${{ env.PRODUCT_NAME }}-Windows-VST3-$tag.zip"
+          Rename-Item "${{ env.PRODUCT_NAME }}-Windows-VST3.zip" $zip
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip --clobber
+          } else {
+            gh release create $tag $zip --title "${{ env.PRODUCT_NAME }} $tag" --generate-notes
+          }
