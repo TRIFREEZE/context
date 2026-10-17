@@ -236,6 +236,8 @@ writing a profile, not by changing code.
   matches and `now < offline_until`. After `refresh_after` it revalidates in the
   background; network failure keeps the current token (grace), an explicit
   server refusal (revoked/expired/unknown) clears it.
+* License keys are sent only over HTTPS (plain http is allowed to 127.0.0.1 for testing).
+* Licensing requests are cancellable, so a dead server never delays DAW shutdown.
 * Licensing never touches the audio path. Unlicensed = generation disabled;
   passthrough, analysis and the UI keep working.
 
@@ -263,9 +265,12 @@ Downloads: `Temp\<id>.part` → validate → rename to
 `Generated\Context_142BPM_FSharpMinor_Vocal_2026-10-16_001.wav`.
 
 Cache cleanup deletes a file only if **all** are true:
-1. it is tracked in history and not a favorite,
-2. it is inside the current managed folder (canonical path check),
-3. its name matches the `Context_*.wav` pattern Context creates.
+1. it is tracked in history,
+2. it is not a favorite and not *pinned* — a file becomes pinned when it is dragged into a
+   DAW, its path is copied, it is shown in Explorer or exported, because DAWs such as
+   FL Studio reference dragged files in place and deleting them would break projects,
+3. it is a direct child of the current managed folder (canonical path check),
+4. its name matches the `Context_*.wav/.aiff` pattern Context creates.
 
 Least-recently-used entries go first. Exports ("Save As") are copies outside the
 managed folder and are never tracked for deletion.
@@ -293,8 +298,10 @@ managed folder and are never tracked for deletion.
 `.github/workflows/build-windows-vst3.yml` on `windows-latest`:
 checkout → Python → pinned JUCE via CMake FetchContent (cached) → configure (default
 Visual Studio generator, x64) → `cmake --build --config Release` → backend pytest →
-`ctest -C Release` (unit + bridge integration) → find `Context.vst3` bundle (fail if
-missing) → artifact `Context-Windows-VST3`. Tags `v*` additionally create a GitHub
+`ctest -C Release` (unit tests, bridge integration against the reference bridge, licensing
+integration against the real FastAPI backend, and `vst3_host_load`, which loads the freshly
+built `Context.vst3` through JUCE's VST3 hosting exactly like a DAW) → find `Context.vst3`
+bundle (fail if missing) → artifact `Context-Windows-VST3`. Tags `v*` additionally create a GitHub
 Release with `Context-Windows-VST3-<tag>.zip`. No secrets are needed to build.
 
 ---
@@ -307,7 +314,16 @@ Release with `Context-Windows-VST3-<tag>.zip`. No secrets are needed to build.
 
 ---
 
-## 14. Architecture review (done before implementation)
+## 14. Prompt building
+
+`PromptBuilder` (pure function, unit-tested) turns prompt + type + analysis into an expanded
+prompt plus structured fields (bpm, key, mode). Rules: an explicit BPM/key in the prompt is
+never overridden; drums get no key unless tuned (808, toms, cowbell); low-end reduction is
+suggested only when the track is bass-heavy *and* the user did not ask for bass; stereo,
+density and tone hints depend on the generation type. With expansion off, the prompt is sent
+as typed but structured fields still go along.
+
+## 15. Architecture review (done before implementation)
 
 | Concern | Finding / fix |
 |---|---|
