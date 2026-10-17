@@ -24,6 +24,13 @@ int main (int argc, char* argv[])
                 context::test::integrationUrls().set (juce::String (opt).substring (2), args.getValueForOption (opt));
         runner.runTestsInCategory ("Integration");
     }
+    else if (args.containsOption ("--product-e2e"))
+    {
+        for (auto opt : { "--license-server", "--license-key" })
+            if (args.containsOption (opt))
+                context::test::integrationUrls().set (juce::String (opt).substring (2), args.getValueForOption (opt));
+        runner.runTestsInCategory ("ProductE2E");
+    }
     else if (args.containsOption ("--license-server"))
     {
         for (auto opt : { "--license-server", "--license-key", "--license-key-single", "--license-key-revoke",
@@ -40,7 +47,7 @@ int main (int argc, char* argv[])
     {
         juce::Array<juce::UnitTest*> tests;
         for (auto* t : juce::UnitTest::getAllTests())
-            if (t->getCategory() != "Integration" && t->getCategory() != "LicenseIntegration")
+            if (t->getCategory() != "Integration" && t->getCategory() != "LicenseIntegration" && t->getCategory() != "ProductE2E")
                 tests.add (t);
         runner.runTests (tests);
     }
